@@ -30,6 +30,12 @@ const API_KEY = process.env.INVEZGO_API_KEY;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// CRON_SECRET (env var sama dengan yang dipakai resource quota-flush di
+// api/admin.js) — di sini SENGAJA hanya membolehkan mode "momentum_sniper",
+// dipakai cron sore otomatis (lihat vercel.json "crons" — jadwal 15:00 WIB,
+// window BSJP) supaya kandidat BSJP tersimpan ke scan_results tanpa perlu ada
+// Admin yang klik manual tiap sore. Mode lain TETAP wajib login user biasa.
+const CRON_SECRET = process.env.CRON_SECRET;
 
 // Nilai default — bisa di-override lewat Admin panel (tabel app_settings),
 // tanpa perlu edit kode/redeploy. Lihat loadSettingsOverrides().
@@ -857,8 +863,15 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  const user = await requireUser(req, res);
-  if (!user) return;
+  const mode = req.query?.mode || "global";
+
+  const authHeader = req.headers.authorization || "";
+  const isCronBsjp = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}` && mode === "momentum_sniper";
+
+  if (!isCronBsjp) {
+    const user = await requireUser(req, res);
+    if (!user) return;
+  }
 
   if (!API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
@@ -867,7 +880,6 @@ export default async function handler(req, res) {
 
   await loadSettingsOverrides();
 
-  const mode = req.query?.mode || "global";
   const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x", "momentum_sniper"]);
   if (!VALID_MODES.has(mode)) {
     res.status(400).json({ error: `mode '${mode}' tidak valid. Pilihan: ${[...VALID_MODES].join(", ")}.` });

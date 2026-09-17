@@ -307,6 +307,22 @@ const PACING_MS = Math.ceil(60000 / RATE_LIMIT_PER_MIN);
 const TIME_BUDGET_MS = 280_000;
 const CRON_SECRET = process.env.CRON_SECRET;
 
+// Batch endpoints (/batch/intraday-data, /batch/order-book, /batch/intraday-index)
+// menerima banyak kode sekaligus (dipisah "|") dalam SATU request — dokumentasi
+// Invezgo sebut maks 10 kode untuk Role MAX, 25 untuk Role ELITE/OWNER/ADMIN.
+// Tier akun ini belum diketahui, jadi pakai 10 (paling aman, tidak akan pernah
+// ditolak). Ini mengganti kebutuhan 1 request PER KODE untuk snapshot live
+// (freq/value/volume/bid/offer) jadi 1 request per 10 kode — penghematan besar
+// dibanding versi awal quota-flush yang panggil /analysis/intraday-data/{code}
+// satu-satu.
+const BATCH_SIZE = 10;
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 function numOrNull(v) {
   return v === "" || v === null || v === undefined ? null : Number(v);
 }
@@ -451,12 +467,39 @@ async function handleQuotaFlush(req, res, supabase) {
     const restCodes = stockList.map((s) => s.code).filter((c) => !recommendedSet.has(c));
     const orderedCodes = [...recommendedCodes, ...restCodes];
 
-    // 3. Untuk tiap kode (sesuai urutan prioritas), tarik 3 dimensi tambahan:
-    //    chart harian 10 hari (harga/volume), information (subsektor), dan
-    //    intraday-data (snapshot live: freq, bid/offer, value). Berhenti
-    //    begitu budget waktu/jumlah request habis — baris yang sudah sempat
-    //    diproses SEBELUM budget habis tetap masuk CSV (partial, bukan
-    //    dibuang semua).
+    // 2b. Snapshot live (freq/value/volume + bid/offer level 1) ditarik LEBIH
+    //     DULU secara batch (10 kode/request), bukan satu-satu di dalam loop
+    //     per-kode di bawah — jauh lebih hemat kuota. Kalau budget habis
+    //     di tengah, chunk yang belum sempat berarti kode-kode itu baris
+    //     CSV-nya kosong di kolom live/bid/offer saja (bukan digagalkan
+    //     total), sama seperti perilaku partial lainnya di endpoint ini.
+    const liveByCode = new Map();
+    const bookByCode = new Map();
+    for (const group of chunkArray(orderedCodes, BATCH_SIZE)) {
+      if (!budgetLeft()) break;
+      try {
+        const results = await paced(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
+        if (Array.isArray(results)) for (const r of results) liveByCode.set(r.code, r);
+      } catch (e) {
+        // skip chunk ini, lanjut chunk berikutnya
+      }
+    }
+    for (const group of chunkArray(orderedCodes, BATCH_SIZE)) {
+      if (!budgetLeft()) break;
+      try {
+        const results = await paced(`/batch/order-book/${group.join("|")}`, { market: "RG" });
+        if (Array.isArray(results)) for (const r of results) bookByCode.set(r.code, r);
+      } catch (e) {
+        // skip chunk ini, lanjut chunk berikutnya
+      }
+    }
+
+    // 3. Untuk tiap kode (sesuai urutan prioritas), tarik 2 dimensi tambahan
+    //    yang TIDAK bisa di-batch: chart harian 10 hari (harga/volume) dan
+    //    information (subsektor) — snapshot live sudah didapat di atas.
+    //    Berhenti begitu budget waktu/jumlah request habis — baris yang
+    //    sudah sempat diproses SEBELUM budget habis tetap masuk CSV
+    //    (partial, bukan dibuang semua).
     const rows = [];
     for (const code of orderedCodes) {
       if (!budgetLeft()) break;
@@ -509,19 +552,22 @@ async function handleQuotaFlush(req, res, supabase) {
         }
       }
 
-      if (budgetLeft()) {
-        try {
-          const live = await paced(`/analysis/intraday-data/${code}`);
-          row.liveFreq = live?.freq ?? "";
-          row.liveValue = live?.value ?? "";
-          row.liveVolume = live?.volume ?? "";
-          row.bidPrice = live?.bid_price ?? "";
-          row.offerPrice = live?.offer_price ?? "";
-          row.bidLot = live?.bid_lot ?? "";
-          row.offerLot = live?.offer_lot ?? "";
-        } catch (e) {
-          // skip
-        }
+      const live = liveByCode.get(code);
+      if (live) {
+        row.liveFreq = live.freq ?? "";
+        row.liveValue = live.value ?? "";
+        row.liveVolume = live.volume ?? "";
+      }
+      const book = bookByCode.get(code);
+      const bid = book?.bid?.[0];
+      const offer = book?.offer?.[0];
+      if (bid) {
+        row.bidPrice = bid.bid1price ?? "";
+        row.bidLot = bid.bid1lot ?? "";
+      }
+      if (offer) {
+        row.offerPrice = offer.offer1price ?? "";
+        row.offerLot = offer.offer1lot ?? "";
       }
 
       rows.push(row);

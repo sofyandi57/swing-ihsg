@@ -92,30 +92,41 @@ isi dengan placeholder atau string kosong.
    muncul dengan section "Flush Kuota API" — ini konfirmasi env var lengkap
    sampai `CRON_SECRET`.
 
-## 6. Vercel Cron — fitur "Flush Kuota API"
+## 6. Vercel Cron — "Flush Kuota API" + "Momentum Sniper BSJP Sore"
 
-Sejak fitur ini ditambahkan, project ini **PUNYA SATU cron job** (bukan lagi
-murni run-on-demand seperti versi awal) — dikonfigurasi di `vercel.json`
-bagian `"crons"`, memanggil `/api/admin?resource=quota-flush` untuk
-mengumpulkan data multi-dimensi saham secara otomatis.
+Project ini **PUNYA DUA cron job** (bukan lagi murni run-on-demand seperti
+versi awal) — dikonfigurasi di `vercel.json` bagian `"crons"`:
+
+| Path | Jadwal (UTC) | WIB | Fungsi |
+|---|---|---|---|
+| `/api/admin?resource=quota-flush` | `50 16 * * *` | 23:50 | Tarik banyak dimensi data saham untuk exhaust/simpan kuota. |
+| `/api/screener?mode=momentum_sniper` | `0 8 * * *` | 15:00 | Jalankan scan Momentum Sniper otomatis di awal window BSJP (15:00-16:00 WIB) — hasil (kalau ada kandidat BSJP lolos) tersimpan ke `scan_runs`/`scan_results` seperti scan manual biasa, jadi User tinggal buka tab Run Scan/histori paginya besok tanpa perlu klik scan sendiri jam segitu. |
+
+**PENTING — batas 2 cron job di paket Hobby**: paket Hobby Vercel membatasi
+maksimal **2 cron job per project**, DAN tiap cron job dibatasi maksimal
+**1x eksekusi/hari** apa pun jadwal cron expression-nya. Project ini SUDAH
+PAS di angka 2 — kalau User minta cron otomatis baru lagi, itu WAJIB upgrade
+ke plan Pro dulu (jelaskan ini ke User, jangan coba akali dari sisi
+konfigurasi).
 
 1. **Verifikasi cron terdaftar**: Project Settings → **Cron Jobs** di dashboard
-   Vercel. Harus muncul satu entry mengarah ke `/api/admin?resource=quota-flush`.
-   Kalau tidak muncul padahal `vercel.json` sudah berisi blok `"crons"`,
+   Vercel. Harus muncul DUA entry, satu untuk tiap path di tabel atas. Kalau
+   tidak muncul padahal `vercel.json` sudah berisi blok `"crons"` lengkap,
    kemungkinan deployment belum di-refresh — redeploy dulu (Vercel membaca
    ulang konfigurasi cron setiap deploy, bukan real-time).
-2. **Batasan paket Hobby**: cron di paket Hobby dibatasi maksimal **1x/hari**,
-   apa pun jadwal cron expression yang ditulis di `vercel.json` — Vercel akan
-   otomatis menyesuaikan/menolak jadwal yang lebih sering. Ini BUKAN bug kalau
-   User mengeluh "cron tidak jalan tiap beberapa menit" — jelaskan batasan ini,
-   jangan coba akali dengan trik lain di sisi Vercel (butuh upgrade plan Pro
-   kalau memang perlu jadwal lebih sering).
-3. **Auth cron**: cron TIDAK memakai sesi login browser — otorisasinya lewat
-   env var `CRON_SECRET` (Section 3). Kalau env var ini belum diset, cron akan
-   selalu gagal (401/403) meski terdaftar dan terjadwal benar — cek log
-   invocation di tab **Cron Jobs** kalau ada laporan "cron gagal".
-4. Fitur cron ini HANYA untuk resource `quota-flush` — TIDAK ada polling/cron
-   lain di project ini untuk fitur apa pun (scan, mentor, chatbot, dst tetap
+2. **Auth cron**: kedua cron TIDAK memakai sesi login browser — otorisasinya
+   lewat env var `CRON_SECRET` (Section 3), dikirim Vercel sebagai header
+   `Authorization: Bearer <CRON_SECRET>`. Kalau env var ini belum diset, KEDUA
+   cron akan selalu gagal (401/403) meski terdaftar dan terjadwal benar — cek
+   log invocation di tab **Cron Jobs** kalau ada laporan "cron gagal".
+   - Di `api/admin.js`, bypass ini berlaku untuk SEMUA action resource
+     `quota-flush`.
+   - Di `api/screener.js`, bypass ini SENGAJA hanya berlaku untuk
+     `mode=momentum_sniper` — permintaan cron-secret ke mode lain (`global`,
+     `value`, dst) akan tetap ditolak 401 karena butuh sesi user asli. Ini
+     bukan bug.
+3. Selain dua cron di atas, TIDAK ada polling/cron lain di project ini untuk
+   fitur apa pun (scan manual mode lain, mentor, chatbot, dst tetap
    run-on-demand murni, tombol manual).
 
 ## 7. Yang TIDAK boleh dilakukan agent ini
