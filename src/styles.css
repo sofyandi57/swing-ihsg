@@ -383,10 +383,18 @@ body {
   margin-bottom: 6px;
 }
 
-/* ===== Mentor / textarea ===== */
+/* ===== Input / select / textarea (.input) =====
+   Sebelumnya cuma "textarea.input" yang benar-benar dapat style — .input di
+   <input> dan <select> (dipakai di HAMPIR SEMUA form di app: Login, Chat,
+   Mentor, Admin, ScanTab, ChartTab, DashboardTab) jatuh ke tampilan default
+   browser (putih polos, kecil) karena selector CSS-nya cuma cocok untuk
+   textarea. Ini bug lama yang baru kelihatan jelas di dropdown Sektor - tapi
+   sebenarnya memengaruhi form field di seluruh app. */
+input.input,
+select.input,
 textarea.input {
   width: 100%;
-  min-height: 88px;
+  min-height: 44px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -394,11 +402,27 @@ textarea.input {
   padding: 11px 12px;
   font-family: inherit;
   font-size: 14px;
-  resize: vertical;
   transition: border-color var(--dur-fast) var(--ease-out);
 }
-textarea.input:hover { border-color: var(--border-strong); }
-textarea.input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+textarea.input { min-height: 88px; resize: vertical; }
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 20px) center, calc(100% - 15px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 34px;
+}
+select.input option { background: var(--panel-2); color: var(--text); }
+input.input:hover, select.input:hover, textarea.input:hover { border-color: var(--border-strong); }
+input.input:focus, select.input:focus, textarea.input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+input.input:disabled, select.input:disabled { opacity: 0.5; cursor: not-allowed; }
+input.input::placeholder { color: var(--muted-2); }
 
 .code-tag {
   display: inline-flex;

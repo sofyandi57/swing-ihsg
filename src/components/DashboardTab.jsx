@@ -36,6 +36,7 @@ export default function DashboardTab() {
   const [priceOverride, setPriceOverride] = useState("");
   const [overrideActive, setOverrideActive] = useState(null);
   const [watchlist, setWatchlist] = useState([]);
+  const [watchlistExpanded, setWatchlistExpanded] = useState(false);
 
   // Ambil watchlist gabungan (PDF/mentor/manual) supaya bisa langsung klik pilih
   // simbol untuk dianalisa, reuse endpoint yang sama dengan tab Watchlist.
@@ -135,24 +136,35 @@ export default function DashboardTab() {
         </form>
 
         {watchlist.length > 0 && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            {watchlist.map((item) => (
-              <button
-                key={item.code}
-                className="code-tag"
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
-                  color: item.code === code ? "#fff" : "var(--accent)",
-                }}
-                onClick={() => selectFromWatchlist(item.code)}
-                disabled={status === "loading"}
-                title="Watchlist"
-              >
-                {item.code}
-              </button>
-            ))}
+          <div style={{ marginBottom: 12 }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setWatchlistExpanded((v) => !v)}
+              style={{ marginBottom: watchlistExpanded ? 8 : 0, fontSize: 12 }}
+            >
+              {watchlistExpanded ? "▴" : "▾"} Watchlist ({watchlist.length})
+            </button>
+            {watchlistExpanded && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {watchlist.map((item) => (
+                  <button
+                    key={item.code}
+                    className="code-tag"
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
+                      color: item.code === code ? "#fff" : "var(--accent)",
+                    }}
+                    onClick={() => selectFromWatchlist(item.code)}
+                    disabled={status === "loading"}
+                    title="Watchlist"
+                  >
+                    {item.code}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

@@ -86,6 +86,7 @@ export default function ChartTab() {
   const [showOverlay, setShowOverlay] = useState(true);
   const candlesRef = useRef([]);
   const [watchlist, setWatchlist] = useState([]);
+  const [watchlistExpanded, setWatchlistExpanded] = useState(false);
 
   const [taStatus, setTaStatus] = useState("idle"); // idle | loading | done | error
   const [taResult, setTaResult] = useState(null);
@@ -362,23 +363,34 @@ export default function ChartTab() {
         </form>
 
         {watchlist.length > 0 && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            {watchlist.map((item) => (
-              <button
-                key={item.code}
-                className="code-tag"
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
-                  color: item.code === code ? "#fff" : "var(--accent)",
-                }}
-                onClick={() => selectFromWatchlist(item.code)}
-                title="Watchlist"
-              >
-                {item.code}
-              </button>
-            ))}
+          <div style={{ marginBottom: 12 }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setWatchlistExpanded((v) => !v)}
+              style={{ marginBottom: watchlistExpanded ? 8 : 0, fontSize: 12 }}
+            >
+              {watchlistExpanded ? "▴" : "▾"} Watchlist ({watchlist.length})
+            </button>
+            {watchlistExpanded && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {watchlist.map((item) => (
+                  <button
+                    key={item.code}
+                    className="code-tag"
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
+                      color: item.code === code ? "#fff" : "var(--accent)",
+                    }}
+                    onClick={() => selectFromWatchlist(item.code)}
+                    title="Watchlist"
+                  >
+                    {item.code}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
