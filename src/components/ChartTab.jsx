@@ -247,15 +247,22 @@ export default function ChartTab() {
       // (bukan dibuang), tinggal geser/scroll ke kiri untuk lihat histori.
       // fitContent() sebelumnya memaksa SEMUA candle muat di layar sekaligus,
       // jadi tiap candle kecil-kecil begitu rentang datanya panjang.
+      //
+      // Pakai setVisibleRange berbasis WAKTU (bukan setVisibleLogicalRange
+      // berbasis index) — dipanggil di rAF berikutnya setelah setData supaya
+      // lightweight-charts sudah selesai menghitung skala baru dulu sebelum
+      // di-set, lebih konsisten daripada memanggilnya di frame yang sama.
       const DEFAULT_VISIBLE_CANDLES = 30;
-      if (candleData.length > DEFAULT_VISIBLE_CANDLES) {
-        chartRef.current?.timeScale().setVisibleLogicalRange({
-          from: candleData.length - DEFAULT_VISIBLE_CANDLES,
-          to: candleData.length - 1 + 2, // sedikit ruang kosong di kanan
-        });
-      } else {
-        chartRef.current?.timeScale().fitContent();
-      }
+      requestAnimationFrame(() => {
+        if (!chartRef.current) return;
+        if (candleData.length > DEFAULT_VISIBLE_CANDLES) {
+          const startTime = candleData[candleData.length - DEFAULT_VISIBLE_CANDLES].time;
+          const endTime = candleData[candleData.length - 1].time;
+          chartRef.current.timeScale().setVisibleRange({ from: startTime, to: endTime });
+        } else {
+          chartRef.current.timeScale().fitContent();
+        }
+      });
       drawOverlay(candles);
 
       setLastCandle(candles[candles.length - 1]);
