@@ -402,6 +402,12 @@ export default function ScanTab() {
           · {meta.totalScanned} saham dicek · {results.length} cocok kriteria ·{" "}
           {(meta.durationMs / 1000).toFixed(1)}s ·{" "}
           {meta.saved ? "✓ tersimpan ke histori" : `⚠ tidak tersimpan (${meta.saveError || "?"})`}
+          {meta.cached && (
+            <>
+              {" "}
+              · ⚡ dari cache ({meta.cacheAgeSec}s lalu — teman lain baru scan kriteria yang sama)
+            </>
+          )}
         </div>
       )}
 

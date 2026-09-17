@@ -44,6 +44,77 @@ let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 // di runScan() untuk alasan lengkapnya.
 const MIN_VALUE_HARDCODE = 1_000_000_000;
 
+// Cache: kalau ada scan_runs dengan kriteria PERSIS SAMA (mode+sector+subsector+
+// minValue+minRatio) dalam CACHE_TTL_MINUTES terakhir, pakai ulang hasilnya —
+// TIDAK panggil Invezgo lagi sama sekali. Ini yang bikin "cuma satu user yang
+// direct API": begitu satu teman scan, teman lain yang scan dengan kriteria
+// sama dalam beberapa menit berikutnya langsung dapat hasil dari Supabase,
+// bukan nembak Invezgo lagi (menghindari rate-limit bentrok saat dipakai
+// beberapa orang bersamaan).
+const CACHE_TTL_MINUTES = 5;
+
+function getSupabaseAdmin() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+// Kembalikan { scanRun, rows } kalau ada cache valid, atau null kalau tidak ada.
+async function findCachedRun(supabase, { mode, sector, subsector, minValue, minRatio }) {
+  const since = new Date(Date.now() - CACHE_TTL_MINUTES * 60 * 1000).toISOString();
+
+  let query = supabase
+    .from("scan_runs")
+    .select("id, scanned_at, duration_ms, total_scanned, total_passed_filter")
+    .eq("mode", mode)
+    .gte("scanned_at", since)
+    .order("scanned_at", { ascending: false })
+    .limit(1);
+
+  // .eq() dengan null tidak match apa pun di Postgres — pakai .is() untuk field
+  // yang memang kosong, supaya cache tetap kena walau parameternya tidak diisi.
+  query = sector ? query.eq("sector", sector) : query.is("sector", null);
+  query = subsector ? query.eq("subsector", subsector) : query.is("subsector", null);
+  query = minValue != null ? query.eq("min_value", Number(minValue)) : query.is("min_value", null);
+  query = minRatio != null ? query.eq("min_ratio", Number(minRatio)) : query.is("min_ratio", null);
+
+  const { data, error } = await query.maybeSingle();
+  if (error || !data) return null;
+
+  const { data: rows, error: rowsError } = await supabase
+    .from("scan_results")
+    .select("*")
+    .eq("run_id", data.id)
+    .eq("passed_filter", true);
+
+  if (rowsError || !rows) return null;
+
+  return { scanRun: data, rows };
+}
+
+// scan_results (snake_case, dari database) → bentuk yang dipakai frontend
+// (camelCase, sama seperti hasil runScan() langsung dari Invezgo).
+function rowFromDb(r) {
+  return {
+    code: r.code,
+    volume: r.volume,
+    prevVolume: r.prev_volume,
+    volumeRatio: Number(r.volume_ratio),
+    price: r.price,
+    prevPrice: r.prev_price,
+    priceChangePct: Number(r.price_change_pct),
+    sector: r.sector,
+    subsector: r.subsector,
+    value: Number(r.value),
+    avgVolume3d: r.avg_volume_3d != null ? Number(r.avg_volume_3d) : null,
+    avgVolume20d: r.avg_volume_20d != null ? Number(r.avg_volume_20d) : null,
+    volRatio3v20: r.vol_ratio_3v20 != null ? Number(r.vol_ratio_3v20) : null,
+    priceChange3d: r.price_change_3d != null ? Number(r.price_change_3d) : null,
+    quietAccumulation: r.quiet_accumulation,
+  };
+}
+
 async function loadSettingsOverrides() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return; // Admin panel belum dipakai — pakai default
 
@@ -284,7 +355,7 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
   return { all: allWithRatio, matched, totalScanned: codes.length };
 }
 
-async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso }) {
+async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso, criteria }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return { saved: false, reason: "Supabase belum dikonfigurasi (env var kosong)." };
   }
@@ -295,7 +366,9 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
 
   const matchedCodes = new Set(matched.map((r) => r.code));
 
-  // 1. Insert satu baris scan_runs, ambil ID-nya untuk foreign key di scan_results
+  // 1. Insert satu baris scan_runs, ambil ID-nya untuk foreign key di scan_results.
+  //    Kriteria (mode/sector/subsector/minValue/minRatio) disimpan supaya scan
+  //    berikutnya dengan kriteria SAMA bisa ketemu run ini lewat findCachedRun().
   const { data: runRow, error: runError } = await supabase
     .from("scan_runs")
     .insert({
@@ -306,6 +379,11 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
       min_volume_ratio: MIN_VOLUME_RATIO,
       min_prev_volume: MIN_PREV_VOLUME,
       min_price: MIN_PRICE,
+      mode: criteria.mode,
+      sector: criteria.sector || null,
+      subsector: criteria.subsector || null,
+      min_value: criteria.minValue != null ? Number(criteria.minValue) : null,
+      min_ratio: criteria.minRatio != null ? Number(criteria.minRatio) : null,
     })
     .select("id")
     .single();
@@ -377,10 +455,42 @@ export default async function handler(req, res) {
     return;
   }
 
+  const criteria = {
+    mode,
+    sector: req.query?.sector || null,
+    subsector: req.query?.subsector || null,
+    minValue: req.query?.minValue || null,
+    minRatio: req.query?.minRatio || null,
+  };
+
   const startedAt = Date.now();
   const scannedAtIso = new Date(startedAt).toISOString();
 
   try {
+    // Cek cache DULU — kalau ada scan lain dengan kriteria persis sama dalam
+    // CACHE_TTL_MENIT terakhir (misal teman lain baru scan barusan), pakai
+    // hasil itu, JANGAN panggil Invezgo lagi. Ini yang mencegah beberapa user
+    // bersamaan "bentrok" kena rate-limit Invezgo secara bersamaan.
+    const supabaseForCache = getSupabaseAdmin();
+    if (supabaseForCache) {
+      const cached = await findCachedRun(supabaseForCache, criteria);
+      if (cached) {
+        res.setHeader("Cache-Control", "no-store");
+        res.status(200).json({
+          mode,
+          criteria,
+          data: cached.rows.map(rowFromDb),
+          totalScanned: cached.scanRun.total_scanned,
+          scannedAt: new Date(cached.scanRun.scanned_at).getTime(),
+          durationMs: cached.scanRun.duration_ms,
+          saved: true,
+          cached: true,
+          cacheAgeSec: Math.round((Date.now() - new Date(cached.scanRun.scanned_at).getTime()) / 1000),
+        });
+        return;
+      }
+    }
+
     const { all, matched, totalScanned } = await runScan({
       mode,
       sector: req.query?.sector,
@@ -398,6 +508,7 @@ export default async function handler(req, res) {
       totalScanned,
       durationMs,
       scannedAtIso,
+      criteria,
     });
 
     res.setHeader("Cache-Control", "no-store");
@@ -407,17 +518,13 @@ export default async function handler(req, res) {
       // kejanggalan (misal totalScanned kelihatan seperti scan global padahal
       // User pilih mode sektor), langsung ketahuan dari respons ini apa yang
       // sebenarnya diproses, bukan tebak-tebakan dari UI semata.
-      criteria: {
-        sector: req.query?.sector || null,
-        subsector: req.query?.subsector || null,
-        minValue: req.query?.minValue || null,
-        minRatio: req.query?.minRatio || null,
-      },
+      criteria,
       data: matched,
       totalScanned,
       scannedAt: startedAt,
       durationMs,
       saved: saveResult.saved,
+      cached: false,
       saveError: saveResult.saved ? undefined : saveResult.reason,
     });
   } catch (e) {

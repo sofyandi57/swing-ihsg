@@ -21,6 +21,20 @@ create table if not exists scan_runs (
   min_price numeric not null
 );
 
+-- Kolom kriteria scan (mode/sector/subsector/minValue/minRatio) ditambahkan
+-- belakangan untuk fitur CACHE — supaya run dengan kriteria yang SAMA dalam
+-- beberapa menit terakhir bisa dipakai ulang tanpa scan Invezgo lagi. Lihat
+-- CACHE_TTL_MINUTES di api/screener.js.
+alter table scan_runs add column if not exists mode text;
+alter table scan_runs add column if not exists sector text;
+alter table scan_runs add column if not exists subsector text;
+alter table scan_runs add column if not exists min_value numeric;
+alter table scan_runs add column if not exists min_ratio numeric;
+
+-- Index untuk lookup cache cepat: "cari run dengan kriteria persis sama,
+-- dalam beberapa menit terakhir"
+create index if not exists idx_scan_runs_cache_lookup on scan_runs(mode, scanned_at desc);
+
 create table if not exists scan_results (
   id bigint generated always as identity primary key,
   run_id uuid not null references scan_runs(id) on delete cascade,
