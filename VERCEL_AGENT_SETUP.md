@@ -43,8 +43,10 @@ Environment Variables). Isi 4 variabel ini, scope **Production, Preview, Develop
 | `SUPABASE_URL` | **Wajib** | Dari Supabase Dashboard → Project Settings → API. |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Wajib** | Dari Supabase Dashboard → Project Settings → API. **PAKAI service_role key, BUKAN anon/public key** — service_role diperlukan untuk insert data dari server. JANGAN PERNAH taruh key ini di kode frontend. |
 | `GROQ_API_KEY` | Opsional | Tanpa ini, fitur AI (ekstraksi kode saham dari pesan mentor + AI Insight di tab Run Scan) tetap jalan tapi fallback ke regex-only / insight kosong — tidak error, hanya kurang pintar. |
+| `VITE_SUPABASE_URL` | **Wajib** untuk fitur login | Sama nilainya dengan `SUPABASE_URL` di atas — tapi harus diisi TERPISAH dengan prefix `VITE_` supaya Vite meng-expose-nya ke kode frontend (browser). Tanpa ini, halaman login gagal total. |
+| `VITE_SUPABASE_ANON_KEY` | **Wajib** untuk fitur login | Dari Supabase Dashboard → Project Settings → API — **PAKAI anon/public key di sini, BUKAN service_role**. anon key memang didesain aman dipakai di browser (beda dengan `SUPABASE_SERVICE_ROLE_KEY` di atas). |
 
-Nilai aktual dari 4 key ini **User sudah punya** (pernah di-generate sebelumnya, lihat
+Nilai aktual dari key-key ini **User sudah punya** (pernah di-generate sebelumnya, lihat
 `.env.example` di repo untuk format). Kalau agent tidak tahu nilainya, **STOP dan minta
 User paste nilainya** — jangan isi dengan placeholder atau string kosong.
 

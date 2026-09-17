@@ -104,3 +104,32 @@ alter table scan_results enable row level security;
 alter table mentor_calls enable row level security;
 alter table pdf_extracts enable row level security;
 alter table watchlist enable row level security;
+
+-- ===== Auth & Admin (login/logout + admin panel) =====
+--
+-- Login/logout dipakai Supabase Auth bawaan (tabel auth.users, dikelola Supabase,
+-- bukan tabel custom kita). Dua tabel di bawah ini HANYA untuk mengatur siapa yang
+-- boleh masuk ke halaman Admin, dan menyimpan parameter screener yang bisa diubah
+-- dari UI Admin tanpa redeploy.
+
+-- app_admins — daftar email yang boleh akses halaman Admin (kelola user, ubah
+-- parameter, lihat histori). TIDAK otomatis terisi — Anda WAJIB insert email
+-- pertama Anda sendiri secara manual setelah membuat akun pertama:
+--   insert into app_admins (email) values ('email_anda@contoh.com');
+create table if not exists app_admins (
+  email text primary key,
+  added_at timestamptz not null default now()
+);
+
+-- app_settings — parameter screener yang bisa di-override dari Admin panel
+-- (MIN_VOLUME_RATIO, MIN_PREV_VOLUME, MIN_PRICE, TOP_N, CONCURRENCY). Kalau
+-- kosong/belum diisi, api/screener.js pakai nilai default yang di-hardcode di
+-- kodenya — tabel ini murni opsional override, bukan wajib diisi.
+create table if not exists app_settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table app_admins enable row level security;
+alter table app_settings enable row level security;

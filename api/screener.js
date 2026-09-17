@@ -19,11 +19,35 @@ const API_KEY = process.env.INVEZGO_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const MIN_VOLUME_RATIO = 3.0;
-const MIN_PREV_VOLUME = 1_000_000;
-const MIN_PRICE = 50;
-const TOP_N = 25;
-const CONCURRENCY = 20; // jumlah slot paralel yang SELALU terisi (lihat runPool)
+// Nilai default — bisa di-override lewat Admin panel (tabel app_settings),
+// tanpa perlu edit kode/redeploy. Lihat loadSettingsOverrides().
+let MIN_VOLUME_RATIO = 3.0;
+let MIN_PREV_VOLUME = 1_000_000;
+let MIN_PRICE = 50;
+let TOP_N = 25;
+let CONCURRENCY = 20; // jumlah slot paralel yang SELALU terisi (lihat runPool)
+
+async function loadSettingsOverrides() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return; // Admin panel belum dipakai — pakai default
+
+  try {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const { data, error } = await supabase.from("app_settings").select("key, value");
+    if (error || !data) return;
+
+    for (const row of data) {
+      if (row.key === "min_volume_ratio") MIN_VOLUME_RATIO = Number(row.value);
+      if (row.key === "min_prev_volume") MIN_PREV_VOLUME = Number(row.value);
+      if (row.key === "min_price") MIN_PRICE = Number(row.value);
+      if (row.key === "top_n") TOP_N = Number(row.value);
+      if (row.key === "concurrency") CONCURRENCY = Number(row.value);
+    }
+  } catch (e) {
+    // Gagal baca override bukan alasan gagalkan scan — tetap pakai default di atas
+  }
+}
 
 async function invezgoGet(path, params = {}) {
   const url = new URL(INVEZGO_BASE_URL + path);
@@ -234,6 +258,8 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
     return;
   }
+
+  await loadSettingsOverrides();
 
   const startedAt = Date.now();
   const scannedAtIso = new Date(startedAt).toISOString();

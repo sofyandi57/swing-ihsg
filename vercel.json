@@ -16,6 +16,9 @@
     },
     "api/technical-analysis.js": {
       "maxDuration": 30
+    },
+    "api/admin.js": {
+      "maxDuration": 20
     }
   }
 }
