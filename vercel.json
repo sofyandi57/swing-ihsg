@@ -25,6 +25,9 @@
     },
     "api/sectors.js": {
       "maxDuration": 30
+    },
+    "api/ai-shortlist.js": {
+      "maxDuration": 45
     }
   }
 }

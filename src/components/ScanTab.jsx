@@ -39,16 +39,19 @@ function formatCompact(n) {
   return formatNumber(n);
 }
 
-function ResultCard({ row, mode }) {
+function ResultCard({ row, mode, aiPick }) {
   const isUp = row.priceChangePct >= 0;
   return (
-    <div className="result-card">
+    <div className="result-card" style={aiPick ? { borderColor: "var(--accent)" } : undefined}>
       <div className="result-card-top">
-        <span className="result-code">{row.code}</span>
+        <span className="result-code">
+          {row.code} {aiPick && <span title={aiPick.reason}>🌟</span>}
+        </span>
         <span className="ratio-pill">
           {mode === "volume_spike" ? `${row.volRatio3v20.toFixed(2)}x (20h)` : `${row.volumeRatio.toFixed(2)}x`}
         </span>
       </div>
+      {aiPick && <div className="cross-hit" style={{ marginTop: 0, marginBottom: 8 }}>🤖 {aiPick.reason}</div>}
       {(row.sector || row.subsector) && (
         <div className="sub" style={{ marginBottom: 8 }}>
           {row.sector || "—"}
@@ -117,6 +120,12 @@ export default function ScanTab() {
   const [sortField, setSortField] = useState("volumeRatio");
   const [sortDir, setSortDir] = useState("desc");
 
+  const [aiStatus, setAiStatus] = useState("idle"); // idle | loading | done | error
+  const [aiPicks, setAiPicks] = useState([]);
+  const [aiError, setAiError] = useState("");
+  const [aiGroqUsed, setAiGroqUsed] = useState(true);
+  const [aiGroqSkipReason, setAiGroqSkipReason] = useState("");
+
   useEffect(() => {
     if (criteriaMode !== "sektor" || sectorsList !== null) return;
     (async () => {
@@ -176,11 +185,44 @@ export default function ScanTab() {
     }
   }
 
+  async function requestAiHelp() {
+    setAiStatus("loading");
+    setAiError("");
+    setAiPicks([]);
+
+    try {
+      const rowsPayload = sortedResults.map((r) => ({
+        code: r.code,
+        volumeRatio: r.volumeRatio,
+        value: r.value,
+        priceChangePct: r.priceChangePct,
+        volRatio3v20: r.volRatio3v20,
+      }));
+      const resp = await authFetch("/api/ai-shortlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: rowsPayload }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+      setAiPicks(json.picks || []);
+      setAiGroqUsed(json.groqUsed);
+      setAiGroqSkipReason(json.groqSkipReason || "");
+      setAiStatus("done");
+    } catch (e) {
+      setAiError(e.message);
+      setAiStatus("error");
+    }
+  }
+
   async function runScan() {
     setStatus("loading");
     setError("");
     setInsight("");
     setInsightStatus("idle");
+    setAiStatus("idle");
+    setAiPicks([]);
 
     const params = new URLSearchParams({ mode: criteriaMode });
     if (criteriaMode === "sektor") {
@@ -389,9 +431,45 @@ export default function ScanTab() {
             </button>
           </div>
 
+          <div className="card">
+            <h2>🤖 Bantuan AI</h2>
+            <p className="sub">
+              Dari {results.length} saham ini, minta AI bantu pilih yang paling menarik berdasarkan
+              volume spike, frekuensi transaksi hari ini, value, dan risiko spread bid-offer —
+              semua ditarik langsung dari Invezgo, bukan tebakan AI.
+            </p>
+            <button className="btn btn-primary btn-block" onClick={requestAiHelp} disabled={aiStatus === "loading"}>
+              {aiStatus === "loading" ? "⏳ Menganalisa..." : "🤖 Minta Bantuan AI"}
+            </button>
+            {aiError && <div className="error-box" style={{ marginTop: 10 }}>{aiError}</div>}
+            {aiStatus === "done" && !aiGroqUsed && (
+              <div className="sub" style={{ marginTop: 10, marginBottom: 0 }}>
+                ⚠ Groq nonaktif{aiGroqSkipReason ? `: ${aiGroqSkipReason}` : ""} — coba lagi setelah GROQ_API_KEY diset.
+              </div>
+            )}
+            {aiStatus === "done" && aiGroqUsed && aiPicks.length === 0 && (
+              <div className="sub" style={{ marginTop: 10, marginBottom: 0 }}>AI tidak menemukan pilihan yang cukup menonjol.</div>
+            )}
+          </div>
+
+          {aiPicks.length > 0 && (
+            <div className="card">
+              <h2>🌟 Pilihan AI ({aiPicks.length})</h2>
+              {aiPicks.map((p) => (
+                <div className="mentor-code-block" key={p.code}>
+                  <div className="mentor-code-head">
+                    <span className="code-tag">{p.code}</span>
+                  </div>
+                  <div className="cross-hit">✓ {p.reason}</div>
+                  <div className="cross-miss">⚠ {p.risk}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="result-list">
             {sortedResults.map((row) => (
-              <ResultCard key={row.code} row={row} mode={criteriaMode} />
+              <ResultCard key={row.code} row={row} mode={criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
             ))}
           </div>
         </>
