@@ -28,6 +28,9 @@
     },
     "api/ai-shortlist.js": {
       "maxDuration": 60
+    },
+    "api/dashboard.js": {
+      "maxDuration": 30
     }
   }
 }
