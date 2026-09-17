@@ -76,7 +76,7 @@ export default function ChartTab() {
   const volumeSeriesRef = useRef(null);
   const priceLinesRef = useRef([]); // garis S/R + Fibonacci yang sedang tergambar — perlu di-remove manual sebelum gambar ulang
 
-  const [code, setCode] = useState("BBCA");
+  const [code, setCode] = useState("");
   const [inputValue, setInputValue] = useState("");
   const [timeframe, setTimeframe] = useState("D");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
@@ -295,6 +295,7 @@ export default function ChartTab() {
   }
 
   useEffect(() => {
+    if (!code) return; // belum ada kode dicari — jangan auto-load apapun
     loadChart(code, timeframe);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, timeframe]);
@@ -353,7 +354,7 @@ export default function ChartTab() {
             style={{ minHeight: 40, flex: 1 }}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Kode saham, misal BBCA"
+            placeholder="Kode saham"
           />
           <button className="btn btn-primary" type="submit" style={{ minHeight: 40 }}>
             Cari
@@ -416,7 +417,10 @@ export default function ChartTab() {
             </span>
           )}
         </div>
-        <div ref={containerRef} style={{ width: "100%", height: 320 }} />
+        <div ref={containerRef} style={{ width: "100%", height: 320, display: code ? "block" : "none" }} />
+        {status === "idle" && !code && (
+          <div className="state-box">Cari kode saham untuk mulai lihat chart.</div>
+        )}
         {status === "loading" && (
           <div className="state-box">
             <div className="spinner" />

@@ -27,7 +27,7 @@ function SigItem({ sig }) {
 
 export default function DashboardTab() {
   const [inputValue, setInputValue] = useState("");
-  const [code, setCode] = useState("BBCA");
+  const [code, setCode] = useState("");
   const [mode, setMode] = useState("swing");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
@@ -93,6 +93,7 @@ export default function DashboardTab() {
 
   function handleModeChange(m) {
     setMode(m);
+    if (!code) return; // belum ada kode dicari — cuma ganti mode, jangan hit API
     runAnalysis(code, m, overrideActive);
   }
 
@@ -126,7 +127,7 @@ export default function DashboardTab() {
             style={{ minHeight: 44, flex: 1 }}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Kode saham, misal BBCA"
+            placeholder="Kode saham"
           />
           <button className="btn btn-primary" type="submit" style={{ minHeight: 44 }}>
             Analisa
