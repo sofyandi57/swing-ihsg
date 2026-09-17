@@ -42,7 +42,14 @@
 //                                    harian cuma benar-benar flush saat kuota mepet, bukan flush
 //                                    buta tiap hari tanpa syarat. Klik manual dari Admin panel
 //                                    TIDAK kena gate ini (keputusan sadar user). ?force=true
-//                                    melewati gate ini (buat testing cron).
+//                                    melewati gate ini (buat testing cron). JUGA ada LOCK
+//                                    (app_settings key "quota_flush_lock_until") supaya dua run
+//                                    (cron eksternal + klik manual, atau dua klik manual menumpuk)
+//                                    tidak jalan BERSAMAAN — ditemukan lewat log Invezgo User yang
+//                                    menunjukkan kode saham sama diminta berkali-kali berdekatan
+//                                    (429 beruntun karena rate gabungan tembus limit). Lock
+//                                    self-healing (expiry, bukan flag permanen) — tidak akan macet
+//                                    kalau function mati mendadak.
 // GET  ?resource=quota-flush&action=export — admin ATAU cron secret. Export SEMUA data yang
 //                                    sudah terkumpul di quota_flush_data sebagai CSV, TANPA
 //                                    memanggil Invezgo sama sekali (baca database saja).
@@ -451,6 +458,40 @@ async function handleQuotaFlush(req, res, supabase) {
     }
   }
 
+  // Lock sederhana lewat app_settings — mencegah DUA run flush jalan
+  // BERSAMAAN (misal cron-job.org tiap 5 menit + klik manual admin di waktu
+  // yang sama, atau dua klik manual menumpuk). Root cause 429 beruntun yang
+  // ditemukan User: kode yang SAMA muncul berkali-kali dalam rentang waktu
+  // berdekatan di log Invezgo — tanda run overlap, gabungan rate-nya tembus
+  // limit 250/menit walau tiap run individual taat pacing sendiri-sendiri.
+  // Lock pakai EXPIRY (bukan flag boolean polos) supaya self-healing kalau
+  // function mati mendadak (timeout/crash) tanpa sempat lepas lock manual —
+  // lock kedaluwarsa otomatis setelah TIME_BUDGET_MS + buffer, tidak pernah
+  // macet permanen.
+  const LOCK_KEY = "quota_flush_lock_until";
+  const LOCK_DURATION_MS = TIME_BUDGET_MS + 30_000;
+  const { data: lockRow } = await supabase.from("app_settings").select("value").eq("key", LOCK_KEY).maybeSingle();
+  const lockUntil = lockRow?.value ? new Date(lockRow.value).getTime() : 0;
+  if (lockUntil > Date.now()) {
+    res.status(200).json({
+      skipped: true,
+      reason: `Run flush lain sedang berjalan (lock aktif sampai ${new Date(lockUntil).toISOString()}) — dilewati supaya tidak overlap dan kena rate limit gabungan.`,
+    });
+    return;
+  }
+  await supabase
+    .from("app_settings")
+    .upsert({ key: LOCK_KEY, value: new Date(Date.now() + LOCK_DURATION_MS).toISOString(), updated_at: new Date().toISOString() }, { onConflict: "key" });
+
+  async function releaseLock() {
+    try {
+      await supabase.from("app_settings").upsert({ key: LOCK_KEY, value: new Date(0).toISOString(), updated_at: new Date().toISOString() }, { onConflict: "key" });
+    } catch (e) {
+      // Gagal lepas lock manual TIDAK fatal — lock akan expire sendiri
+      // setelah LOCK_DURATION_MS berkat mekanisme expiry di atas.
+    }
+  }
+
   const requestedMax = Number(req.query?.maxRequests);
   const startedAt = Date.now();
   let requestsUsed = 0;
@@ -648,7 +689,9 @@ async function handleQuotaFlush(req, res, supabase) {
     res.setHeader("X-Codes-Processed", String(rows.length));
     res.setHeader("X-Codes-Total", String(orderedCodes.length));
     res.status(200).send(csv);
+    await releaseLock();
   } catch (e) {
+    await releaseLock();
     res.status(502).json({ error: String(e.message || e), requestsUsed });
   }
 }
