@@ -45,7 +45,10 @@ function findSupportResistance(candles, currentPrice, lookback = 3) {
 // Fibonacci retracement standar antara swing high dan swing low TERTINGGI/
 // TERENDAH dalam 80 candle terakhir (bukan yang "nearest" seperti support/
 // resistance) — level 0%/100% di titik ekstrem, sisanya di antaranya.
-const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+// Cuma 3 level "golden pocket" yang paling umum dipakai trader — 7 level
+// sebelumnya (termasuk 0%/100% yang sudah terwakili garis Support/Resistance)
+// bikin sumbu harga penuh label dan mengganggu.
+const FIB_RATIOS = [0.382, 0.5, 0.618];
 
 function computeFibonacci(candles) {
   const window = candles.slice(-80);
@@ -180,17 +183,18 @@ export default function ChartTab() {
     }
     if (fib) {
       fib.forEach(({ ratio, price }) => {
-        // 0% dan 100% sudah terwakili sebagai swing high/low — tetap digambar
-        // tipis supaya konteks range-nya kelihatan, tapi warna lebih redup.
-        const isEdge = ratio === 0 || ratio === 1;
+        // axisLabelVisible: false + title kosong — garis tetap tergambar tipis
+        // sebagai konteks, tanpa teks yang menumpuk di sumbu harga (keluhan
+        // sebelumnya: terlalu ramai). Warna ungu tipis sudah cukup membedakan
+        // dari garis Support/Resistance yang memang diberi label.
         lines.push(
           seriesRef.current.createPriceLine({
             price,
-            color: isEdge ? "#5f636c" : "#8b6bff",
+            color: "rgba(139,107,255,0.6)",
             lineWidth: 1,
             lineStyle: 3, // dotted
-            axisLabelVisible: true,
-            title: `Fib ${(ratio * 100).toFixed(1)}%`,
+            axisLabelVisible: false,
+            title: "",
           })
         );
       });
@@ -238,7 +242,20 @@ export default function ChartTab() {
 
       seriesRef.current?.setData(candleData);
       volumeSeriesRef.current?.setData(volumeData);
-      chartRef.current?.timeScale().fitContent();
+
+      // Default zoom ke 30 candle terakhir — data lebih lama TETAP dimuat
+      // (bukan dibuang), tinggal geser/scroll ke kiri untuk lihat histori.
+      // fitContent() sebelumnya memaksa SEMUA candle muat di layar sekaligus,
+      // jadi tiap candle kecil-kecil begitu rentang datanya panjang.
+      const DEFAULT_VISIBLE_CANDLES = 30;
+      if (candleData.length > DEFAULT_VISIBLE_CANDLES) {
+        chartRef.current?.timeScale().setVisibleLogicalRange({
+          from: candleData.length - DEFAULT_VISIBLE_CANDLES,
+          to: candleData.length - 1 + 2, // sedikit ruang kosong di kanan
+        });
+      } else {
+        chartRef.current?.timeScale().fitContent();
+      }
       drawOverlay(candles);
 
       setLastCandle(candles[candles.length - 1]);
