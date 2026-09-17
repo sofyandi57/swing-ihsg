@@ -35,5 +35,11 @@
     "api/chatbot.js": {
       "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/admin?resource=quota-flush",
+      "schedule": "50 16 * * *"
+    }
+  ]
 }

@@ -364,6 +364,32 @@ function QuotaFlushSection() {
   const [error, setError] = useState("");
   const [lastResult, setLastResult] = useState(null);
   const [maxRequests, setMaxRequests] = useState("");
+  const [exportStatus, setExportStatus] = useState("idle");
+  const [exportError, setExportError] = useState("");
+
+  async function downloadCsv(url, filename) {
+    const resp = await authFetch(url);
+    if (!resp.ok) {
+      const json = await resp.json().catch(() => ({}));
+      throw new Error(json.error || `HTTP ${resp.status}`);
+    }
+    const headers = {
+      requestsUsed: resp.headers.get("X-Requests-Used"),
+      codesProcessed: resp.headers.get("X-Codes-Processed"),
+      codesTotal: resp.headers.get("X-Codes-Total"),
+      rowsTotal: resp.headers.get("X-Rows-Total"),
+    };
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objectUrl);
+    return headers;
+  }
 
   async function runFlush() {
     setStatus("loading");
@@ -371,31 +397,27 @@ function QuotaFlushSection() {
     try {
       const params = new URLSearchParams();
       if (maxRequests) params.set("maxRequests", maxRequests);
-      const resp = await authFetch(`/api/admin?resource=quota-flush${params.toString() ? "&" + params.toString() : ""}`);
-      if (!resp.ok) {
-        const json = await resp.json().catch(() => ({}));
-        throw new Error(json.error || `HTTP ${resp.status}`);
-      }
-
-      const requestsUsed = resp.headers.get("X-Requests-Used");
-      const codesProcessed = resp.headers.get("X-Codes-Processed");
-      const codesTotal = resp.headers.get("X-Codes-Total");
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `invezgo-quota-flush-${Date.now()}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      setLastResult({ requestsUsed, codesProcessed, codesTotal });
+      const headers = await downloadCsv(
+        `/api/admin?resource=quota-flush${params.toString() ? "&" + params.toString() : ""}`,
+        `invezgo-quota-flush-${Date.now()}.csv`
+      );
+      setLastResult(headers);
       setStatus("idle");
     } catch (e) {
       setError(e.message);
       setStatus("error");
+    }
+  }
+
+  async function runExport() {
+    setExportStatus("loading");
+    setExportError("");
+    try {
+      await downloadCsv(`/api/admin?resource=quota-flush&action=export`, `invezgo-quota-flush-export-${Date.now()}.csv`);
+      setExportStatus("idle");
+    } catch (e) {
+      setExportError(e.message);
+      setExportStatus("error");
     }
   }
 
@@ -406,9 +428,16 @@ function QuotaFlushSection() {
         Tarik banyak dimensi data (chart 10 hari, sektor/subsektor, snapshot live: freq/bid/offer)
         untuk saham paling direkomendasikan (dari scan terbaru) + sisa universe, dipacing 230
         request/menit (buffer aman di bawah limit resmi Invezgo 250/menit) selama ~4-5 menit per
-        klik. Hasilnya langsung terdownload sebagai CSV. Klik beberapa kali untuk lanjutkan kalau
-        belum habis — rate limit + batas durasi function bikin "sekali klik habis semua kuota"
-        mustahil secara teknis.
+        klik. Klik beberapa kali untuk lanjutkan kalau belum habis — rate limit + batas durasi
+        function bikin "sekali klik habis semua kuota" mustahil secara teknis.
+      </p>
+      <p className="sub">
+        📅 <b>Otomatis via Vercel Cron</b>: jalan sendiri 1x/hari (jadwal di{" "}
+        <code>vercel.json</code>) memakai secret <code>CRON_SECRET</code> (set env var ini di
+        Vercel Project Settings). Paket Hobby membatasi cron maksimal 1x/hari — TIDAK bisa
+        berulang tiap beberapa menit semalaman tanpa upgrade ke Pro. Setiap kali flush jalan
+        (manual klik ATAU cron), hasilnya disimpan ke database — pakai tombol "Export" di bawah
+        untuk unduh CSV dari data yang sudah terkumpul kapan saja, tanpa perlu jalankan flush baru.
       </p>
       <div style={{ marginBottom: 10 }}>
         <div className="result-metric-label" style={{ marginBottom: 6 }}>
@@ -427,11 +456,17 @@ function QuotaFlushSection() {
       {lastResult && (
         <div className="cross-hit" style={{ marginBottom: 10 }}>
           ✓ Terakhir: {lastResult.requestsUsed} request terpakai, {lastResult.codesProcessed} dari{" "}
-          {lastResult.codesTotal} kode diproses.
+          {lastResult.codesTotal} kode diproses (tersimpan ke database).
         </div>
       )}
       <button className="btn btn-primary btn-block" onClick={runFlush} disabled={status === "loading"}>
         {status === "loading" ? "⏳ Menjalankan (bisa beberapa menit)..." : "📥 Jalankan & Download CSV"}
+      </button>
+
+      <div style={{ height: 12 }} />
+      {exportError && <div className="error-box">Gagal export: {exportError}</div>}
+      <button className="btn btn-ghost btn-block" onClick={runExport} disabled={exportStatus === "loading"}>
+        {exportStatus === "loading" ? "⏳ Mengekspor..." : "📤 Export CSV dari Data Terkumpul (tanpa hit API)"}
       </button>
     </div>
   );

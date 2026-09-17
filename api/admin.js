@@ -28,7 +28,17 @@
 //                                    (250/menit) supaya tidak 429 percuma, sampai budget waktu
 //                                    function/quota habis. Balikan CSV langsung (bukan JSON) —
 //                                    lihat catatan jujur soal kenapa TIDAK bisa "habiskan semua
-//                                    kuota sekaligus" di komentar handleQuotaFlush.
+//                                    kuota sekaligus" di komentar handleQuotaFlush. Hasil SELALU
+//                                    disimpan ke tabel quota_flush_data (upsert per kode), jadi
+//                                    tetap berguna meski dipicu cron tanpa ada yang menonton CSV-nya.
+//                                    Bisa dipicu VERCEL CRON (lihat vercel.json "crons") dengan
+//                                    header "Authorization: Bearer <CRON_SECRET>" (env var, set
+//                                    sendiri di Vercel project settings) SEBAGAI GANTI token admin
+//                                    biasa — cuma berlaku untuk resource ini, bukan resource admin
+//                                    lain.
+// GET  ?resource=quota-flush&action=export — admin ATAU cron secret. Export SEMUA data yang
+//                                    sudah terkumpul di quota_flush_data sebagai CSV, TANPA
+//                                    memanggil Invezgo sama sekali (baca database saja).
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -291,10 +301,95 @@ function csvEscape(val) {
 const RATE_LIMIT_PER_MIN = 230;
 const PACING_MS = Math.ceil(60000 / RATE_LIMIT_PER_MIN);
 const TIME_BUDGET_MS = 280_000;
+const CRON_SECRET = process.env.CRON_SECRET;
+
+function numOrNull(v) {
+  return v === "" || v === null || v === undefined ? null : Number(v);
+}
+
+// Simpan hasil harvest ke tabel (bukan cuma CSV sekali unduh) — supaya cron
+// otomatis (yang jalan tanpa ada browser yang "menonton" responsnya) tetap
+// berguna: hasilnya menumpuk di database, Admin export CSV-nya kapan saja
+// lewat action=export, terlepas dari trigger-nya manual klik atau cron.
+async function saveFlushRows(supabase, rows) {
+  if (!supabase || rows.length === 0) return;
+  const upsertRows = rows.map((r) => ({
+    code: r.code,
+    sector: r.sector || null,
+    subsector: r.subsector || null,
+    is_recommended: r.isRecommended === "yes",
+    price: numOrNull(r.price),
+    prev_price: numOrNull(r.prevPrice),
+    price_change_pct: numOrNull(r.priceChangePct),
+    open: numOrNull(r.open),
+    high: numOrNull(r.high),
+    low: numOrNull(r.low),
+    volume: numOrNull(r.volume),
+    prev_volume: numOrNull(r.prevVolume),
+    volume_ratio: numOrNull(r.volumeRatio),
+    value: numOrNull(r.value),
+    live_freq: numOrNull(r.liveFreq),
+    live_value: numOrNull(r.liveValue),
+    live_volume: numOrNull(r.liveVolume),
+    bid_price: numOrNull(r.bidPrice),
+    offer_price: numOrNull(r.offerPrice),
+    bid_lot: numOrNull(r.bidLot),
+    offer_lot: numOrNull(r.offerLot),
+    updated_at: new Date().toISOString(),
+  }));
+  await supabase.from("quota_flush_data").upsert(upsertRows, { onConflict: "code" });
+}
+
+function rowsToCsv(rows, columns) {
+  const header = columns.join(",");
+  const body = rows.map((r) => columns.map((c) => csvEscape(r[c])).join(",")).join("\n");
+  return `${header}\n${body}\n`;
+}
 
 async function handleQuotaFlush(req, res, supabase) {
-  const admin = await requireAdmin(req, res, supabase);
-  if (!admin) return;
+  // Cron Vercel mengirim header "Authorization: Bearer <CRON_SECRET>" (env var
+  // yang sama diset di Vercel project settings) — TIDAK ada sesi browser/token
+  // Supabase saat dipanggil dari cron (bukan dari user yang login), jadi
+  // requireAdmin() biasa akan selalu gagal untuk trigger otomatis. Cron secret
+  // ini SENGAJA cuma berlaku untuk resource quota-flush (bukan requireAdmin
+  // global) — resource admin lain (users/settings/dst) tetap wajib token admin
+  // asli, prinsip least-privilege.
+  const authHeader = req.headers.authorization || "";
+  const isCron = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`;
+  if (!isCron) {
+    const admin = await requireAdmin(req, res, supabase);
+    if (!admin) return;
+  }
+
+  // action=export — TIDAK memanggil Invezgo sama sekali, cuma baca data yang
+  // sudah terkumpul dari harvest sebelumnya (manual atau cron) dan kembalikan
+  // sebagai CSV. Dipakai Admin buat lihat/download hasil semalaman tanpa
+  // menunggu flush baru selesai.
+  if (req.query?.action === "export") {
+    const { data, error } = await supabase
+      .from("quota_flush_data")
+      .select("*")
+      .order("is_recommended", { ascending: false })
+      .order("updated_at", { ascending: false });
+    if (error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    const columns = [
+      "code", "sector", "subsector", "is_recommended",
+      "price", "prev_price", "price_change_pct", "open", "high", "low",
+      "volume", "prev_volume", "volume_ratio", "value",
+      "live_freq", "live_value", "live_volume", "bid_price", "offer_price", "bid_lot", "offer_lot",
+      "updated_at",
+    ];
+    const csv = rowsToCsv(data || [], columns);
+    const filename = `invezgo-quota-flush-export-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("X-Rows-Total", String((data || []).length));
+    res.status(200).send(csv);
+    return;
+  }
 
   if (!INVEZGO_API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
@@ -428,10 +523,13 @@ async function handleQuotaFlush(req, res, supabase) {
       rows.push(row);
     }
 
+    // Simpan ke database SELALU — baik dipicu klik manual maupun cron
+    // otomatis. Ini yang membuat hasil cron (yang tidak ada browser menonton
+    // responsnya) tetap berguna, bukan hilang begitu saja.
+    await saveFlushRows(supabase, rows);
+
     const columns = Object.keys(rows[0] || { code: "" });
-    const header = columns.join(",");
-    const body = rows.map((r) => columns.map((c) => csvEscape(r[c])).join(",")).join("\n");
-    const csv = `${header}\n${body}\n`;
+    const csv = rowsToCsv(rows, columns);
 
     const filename = `invezgo-quota-flush-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     res.setHeader("Content-Type", "text/csv; charset=utf-8");

@@ -216,3 +216,26 @@ alter table app_admins enable row level security;
 alter table app_settings enable row level security;
 alter table auth_activity_log enable row level security;
 alter table freq_baseline enable row level security;
+
+-- quota_flush_data — hasil terkumpul dari fitur "Flush Kuota API" (Admin panel).
+-- Satu baris per kode, DI-UPSERT (bukan log berkali-kali) — setiap kali flush
+-- jalan (manual klik ATAU cron otomatis semalaman), baris kode yang sama
+-- ditimpa dengan data terbaru. Ini yang membuat cron sekali/hari (limit
+-- Vercel Hobby) tetap berguna: hasilnya TERSIMPAN di sini, bukan cuma jadi
+-- file CSV sekali unduh yang hilang kalau tidak ada yang menonton saat cron
+-- jalan — Admin bisa export CSV dari tabel ini kapan saja lewat
+-- ?resource=quota-flush&action=export.
+create table if not exists quota_flush_data (
+  code text primary key,
+  sector text,
+  subsector text,
+  is_recommended boolean not null default false,
+  price numeric, prev_price numeric, price_change_pct numeric,
+  open numeric, high numeric, low numeric,
+  volume bigint, prev_volume bigint, volume_ratio numeric, value numeric,
+  live_freq bigint, live_value numeric, live_volume bigint,
+  bid_price numeric, offer_price numeric, bid_lot bigint, offer_lot bigint,
+  updated_at timestamptz not null default now()
+);
+
+alter table quota_flush_data enable row level security;
