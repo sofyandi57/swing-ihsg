@@ -78,9 +78,12 @@ export default function App() {
   return (
     <>
       <header className="app-header">
-        <div className="app-title">
-          <h1>Volume Scalping Screener</h1>
-          <span>{session.user.email}</span>
+        <div className="app-title-row">
+          <div className="app-badge" aria-hidden="true">📡</div>
+          <div className="app-title">
+            <h1>Volume Scalping Screener</h1>
+            <span>{session.user.email}</span>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {isAdmin && (

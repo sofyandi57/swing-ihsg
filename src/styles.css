@@ -1,32 +1,39 @@
 /* Hallmark · component: chrome polish (header, tabbar, cards, buttons) · genre: modern-minimal
- * theme: custom (vibe: "fintech night terminal, calm precision" · paper oklch(12.5% 0.006 260) · accent oklch(66% 0.19 260) cool · Inter)
+ * theme: custom (vibe: "terminal saham premium, teal + gold" · paper oklch(12% 0.008 235) · accent oklch(72% 0.13 195) cool teal + oklch(80% 0.15 85) warm gold · Inter)
  * states: default · hover · focus-visible · active · disabled — see .btn, .tab-btn, textarea.input
+ *
+ * Palet lama (biru-ungu generik ala SaaS template) diganti jadi identitas
+ * dua-warna teal (data/growth) + gold (highlight/premium) yang lebih khas
+ * untuk alat baca saham, bukan "AI app default". Semua tambahan visual di
+ * bawah ini (glow, badge, aksen kartu) murni CSS — tidak ada font/gambar
+ * eksternal baru yang di-fetch, jadi tidak menambah waktu reload.
  */
 :root {
-  /* --- paper / surfaces (near-neutral, faint cool cast) --- */
-  --bg: oklch(12.5% 0.006 260);
-  --bg-elevated: oklch(15.5% 0.007 260);
-  --panel: oklch(17.5% 0.007 260);
-  --panel-2: oklch(21% 0.008 260);
-  --panel-hover: oklch(23.5% 0.009 260);
-  --border: oklch(27% 0.01 260);
-  --border-strong: oklch(34% 0.012 260);
+  /* --- paper / surfaces (near-neutral, faint cool teal cast) --- */
+  --bg: oklch(12% 0.008 235);
+  --bg-elevated: oklch(15% 0.009 235);
+  --panel: oklch(17% 0.009 235);
+  --panel-2: oklch(20.5% 0.01 235);
+  --panel-hover: oklch(23% 0.011 235);
+  --border: oklch(27% 0.012 235);
+  --border-strong: oklch(35% 0.014 235);
 
   /* --- text --- */
-  --text: oklch(95.5% 0.004 260);
-  --muted: oklch(66% 0.012 260);
-  --muted-2: oklch(46% 0.012 260);
+  --text: oklch(95.5% 0.004 235);
+  --muted: oklch(66% 0.014 235);
+  --muted-2: oklch(46% 0.014 235);
 
   /* --- semantic accents --- */
-  --green: oklch(72% 0.17 152);
-  --green-bg: oklch(72% 0.17 152 / 0.12);
-  --red: oklch(65% 0.21 25);
-  --red-bg: oklch(65% 0.21 25 / 0.12);
-  --yellow: oklch(80% 0.16 95);
-  --yellow-bg: oklch(80% 0.16 95 / 0.12);
-  --accent: oklch(66% 0.19 260);
-  --accent-bg: oklch(66% 0.19 260 / 0.14);
-  --accent-2: oklch(64% 0.19 293);
+  --green: oklch(74% 0.16 155);
+  --green-bg: oklch(74% 0.16 155 / 0.12);
+  --red: oklch(66% 0.20 22);
+  --red-bg: oklch(66% 0.20 22 / 0.12);
+  --yellow: oklch(80% 0.15 85);
+  --yellow-bg: oklch(80% 0.15 85 / 0.12);
+  --accent: oklch(72% 0.13 195);
+  --accent-bg: oklch(72% 0.13 195 / 0.14);
+  --accent-2: oklch(80% 0.15 85);
+  --accent-2-bg: oklch(80% 0.15 85 / 0.14);
 
   /* --- shape / motion --- */
   --radius: 14px;
@@ -48,7 +55,11 @@ html, body {
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(720px 360px at 15% -8%, oklch(72% 0.13 195 / 0.10), transparent 60%),
+    radial-gradient(560px 320px at 100% 0%, oklch(80% 0.15 85 / 0.07), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -94,6 +105,15 @@ body {
   font-weight: 700;
   letter-spacing: -0.015em;
   overflow-wrap: anywhere;
+  color: var(--text); /* fallback kalau background-clip:text tidak didukung */
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .app-title h1 {
+    background: linear-gradient(90deg, var(--text), var(--text) 60%, var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 .app-title span {
   font-size: 11px;
@@ -101,13 +121,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .app-badge {
-  width: 34px; height: 34px;
-  border-radius: 10px;
+  width: 36px; height: 36px;
+  flex-shrink: 0;
+  border-radius: 11px;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px;
-  box-shadow: 0 2px 10px -2px oklch(66% 0.19 260 / 0.45);
+  font-size: 17px;
+  box-shadow: 0 2px 12px -2px oklch(72% 0.13 195 / 0.5);
 }
+.app-title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
 /* ===== Tab bar (bottom, mobile-first) ===== */
 .tabbar {
@@ -339,8 +361,9 @@ body {
 
 /* ===== AI insight box ===== */
 .insight-box {
-  background: linear-gradient(135deg, oklch(66% 0.19 260 / 0.08), oklch(64% 0.19 293 / 0.08));
-  border: 1px solid oklch(66% 0.19 260 / 0.25);
+  background: linear-gradient(135deg, oklch(80% 0.15 85 / 0.09), oklch(72% 0.13 195 / 0.06));
+  border: 1px solid oklch(80% 0.15 85 / 0.28);
+  border-left: 3px solid var(--accent-2);
   border-radius: var(--radius-sm);
   padding: 13px 14px;
   font-size: 13px;
@@ -354,7 +377,7 @@ body {
   gap: 6px;
   font-size: 11px;
   font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-2);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 6px;
