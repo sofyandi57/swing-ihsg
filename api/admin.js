@@ -39,6 +39,10 @@
 // GET  ?resource=quota-flush&action=export — admin ATAU cron secret. Export SEMUA data yang
 //                                    sudah terkumpul di quota_flush_data sebagai CSV, TANPA
 //                                    memanggil Invezgo sama sekali (baca database saja).
+// GET  ?resource=quota-usage       — admin only. Satu kali panggil Invezgo GET /usage/api
+//                                    (murah, TIDAK dipacing/dihitung seperti quota-flush) untuk
+//                                    dapat sisa kuota bulanan { usage, remaining, limit,
+//                                    isBlocked, expire } — dipakai gauge di panel Admin.
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -560,6 +564,23 @@ async function handleSecrets(req, res, supabase) {
   });
 }
 
+async function handleQuotaUsage(req, res, supabase) {
+  const admin = await requireAdmin(req, res, supabase);
+  if (!admin) return;
+
+  if (!INVEZGO_API_KEY) {
+    res.status(500).json({ error: "INVEZGO_API_KEY belum dikonfigurasi." });
+    return;
+  }
+
+  try {
+    const data = await invezgoGet("/usage/api");
+    res.status(200).json(data);
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
+  }
+}
+
 export default async function handler(req, res) {
   const supabase = getAdminClient();
   if (!supabase) {
@@ -591,7 +612,10 @@ export default async function handler(req, res) {
     case "quota-flush":
       await handleQuotaFlush(req, res, supabase);
       return;
+    case "quota-usage":
+      await handleQuotaUsage(req, res, supabase);
+      return;
     default:
-      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush." });
+      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush, quota-usage." });
   }
 }

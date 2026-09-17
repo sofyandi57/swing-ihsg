@@ -359,6 +359,80 @@ function SecretsSection() {
 // serverless function bikin itu mustahil (lihat komentar lengkap di
 // api/admin.js handleQuotaFlush) — klik beberapa kali kalau mau lanjutkan
 // dalam sisa waktu sebelum reset kuota bulanan.
+function QuotaGaugeSection() {
+  const [status, setStatus] = useState("loading"); // loading | ok | error
+  const [error, setError] = useState("");
+  const [usage, setUsage] = useState(null);
+
+  async function load() {
+    setStatus("loading");
+    setError("");
+    try {
+      const resp = await authFetch(`/api/admin?resource=quota-usage`);
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setUsage(json);
+      setStatus("ok");
+    } catch (e) {
+      setError(e.message);
+      setStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const pct = usage && usage.limit ? Math.min(100, Math.round((usage.usage / usage.limit) * 100)) : null;
+  const barColor = pct === null ? "#666" : pct >= 90 ? "#e5484d" : pct >= 70 ? "#f5a623" : "#3fb950";
+
+  return (
+    <div className="card">
+      <h2>📊 Sisa Kuota API Invezgo</h2>
+      {status === "loading" && <p className="sub">Memuat...</p>}
+      {status === "error" && <div className="error-box">Gagal memuat kuota: {error}</div>}
+      {status === "ok" && usage && (
+        <>
+          <div
+            style={{
+              width: "100%",
+              height: 20,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.08)",
+              overflow: "hidden",
+              marginBottom: 8,
+            }}
+          >
+            <div
+              style={{
+                width: `${pct}%`,
+                height: "100%",
+                background: barColor,
+                transition: "width 0.3s ease",
+              }}
+            />
+          </div>
+          <div className="sub" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <span>
+              Terpakai: <b>{usage.usage.toLocaleString("id-ID")}</b> / {usage.limit.toLocaleString("id-ID")} ({pct}%)
+            </span>
+            <span>
+              Sisa: <b>{usage.remaining.toLocaleString("id-ID")}</b>
+            </span>
+          </div>
+          <div className="sub" style={{ marginTop: 4 }}>
+            Reset: {new Date(usage.expire).toLocaleString("id-ID")}
+            {usage.isBlocked ? " · ⚠️ STATUS: DIBLOKIR SEMENTARA" : ""}
+          </div>
+          <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={load}>
+            🔄 Refresh
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function QuotaFlushSection() {
   const [status, setStatus] = useState("idle"); // idle | loading | error
   const [error, setError] = useState("");
@@ -477,6 +551,7 @@ export default function AdminTab() {
     <>
       <UsersSection />
       <ActivitySection />
+      <QuotaGaugeSection />
       <QuotaFlushSection />
       <SettingsSection />
       <SecretsSection />
