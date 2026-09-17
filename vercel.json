@@ -10,6 +10,9 @@
     },
     "api/pdf-watchlist.js": {
       "maxDuration": 60
+    },
+    "api/stock-chart.js": {
+      "maxDuration": 20
     }
   }
 }

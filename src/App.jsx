@@ -2,9 +2,11 @@ import { useState } from "react";
 import ScanTab from "./components/ScanTab.jsx";
 import MentorTab from "./components/MentorTab.jsx";
 import WatchlistTab from "./components/WatchlistTab.jsx";
+import ChartTab from "./components/ChartTab.jsx";
 
 const TABS = [
   { id: "scan", label: "Run Scan", icon: "⚡" },
+  { id: "chart", label: "Chart", icon: "📊" },
   { id: "mentor", label: "Mentor", icon: "💬" },
   { id: "watchlist", label: "Watchlist", icon: "⭐" },
 ];
@@ -25,6 +27,9 @@ export default function App() {
       <main>
         <div style={{ display: activeTab === "scan" ? "block" : "none" }}>
           <ScanTab />
+        </div>
+        <div style={{ display: activeTab === "chart" ? "block" : "none" }}>
+          <ChartTab />
         </div>
         <div style={{ display: activeTab === "mentor" ? "block" : "none" }}>
           <MentorTab />
