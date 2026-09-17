@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "public": false,
+  "functions": {
+    "api/screener.js": {
+      "maxDuration": 120
+    }
+  }
+}

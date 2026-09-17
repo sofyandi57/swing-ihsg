@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Volume Scalping Screener</title>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --panel: #161619;
+    --border: #2a2a2e;
+    --text: #e8e8ea;
+    --muted: #8a8a90;
+    --green: #2ecc71;
+    --red: #e74c3c;
+    --accent: #5b8def;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.5px; }
+  button#runBtn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  button#runBtn:hover { opacity: 0.85; }
+  button#runBtn:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .meta {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+  tr:hover { background: rgba(255,255,255,0.03); }
+  .code { font-weight: 600; }
+  .ratio { color: var(--accent); font-weight: 600; }
+  .up { color: var(--green); }
+  .down { color: var(--red); }
+  .empty, .idle {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+  }
+  .loading {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+  }
+  .spinner {
+    width: 24px; height: 24px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 16px;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-box {
+    background: rgba(231,76,60,0.1);
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    display: none;
+  }
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 32px 0 20px;
+  }
+  h2 { font-size: 15px; margin: 0 0 8px; color: var(--text); }
+  .sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  textarea#mentorInput {
+    width: 100%;
+    min-height: 90px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    resize: vertical;
+  }
+  textarea#mentorInput:focus { outline: 1px solid var(--accent); }
+  button#crossCheckBtn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  button#crossCheckBtn:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .mentor-result {
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  .code-tag {
+    display: inline-block;
+    background: rgba(91,141,239,0.15);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    margin: 2px 4px 2px 0;
+  }
+  .cross-hit {
+    color: var(--green);
+    font-size: 12px;
+    margin: 4px 0 0 4px;
+  }
+  .cross-miss {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 4px 0 0 4px;
+  }
+  .mentor-history-item {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .mentor-history-item:last-child { border-bottom: none; }
+  .mentor-history-time { color: var(--muted); }
+  .check-now-btn {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-left: 4px;
+  }
+  .check-now-btn:disabled {
+    border-color: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .check-now-result { margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Volume Scalping Screener</h1>
+  <button id="runBtn">▶ Run Scan</button>
+</header>
+
+<div class="meta" id="metaText">
+  Belum pernah dijalankan. Klik "Run Scan" untuk memindai ~900 saham BEI (proses ini
+  memanggil Invezgo API satu per satu dengan concurrency terbatas — bisa memakan waktu
+  30 detik sampai 2 menit tergantung kondisi API).
+</div>
+
+<div class="error-box" id="errorBox"></div>
+
+<div class="idle" id="idleMsg">Klik tombol "Run Scan" di atas untuk memulai.</div>
+
+<div class="loading" id="loadingMsg" style="display: none;">
+  <div class="spinner"></div>
+  Memindai saham... ini bisa memakan waktu 30 detik sampai 2 menit. Jangan tutup tab.
+</div>
+
+<table id="resultTable" style="display: none;">
+  <thead>
+    <tr>
+      <th>Symbol</th>
+      <th>Volume</th>
+      <th>Prev Volume</th>
+      <th>Ratio</th>
+      <th>Price</th>
+      <th>Prev Price</th>
+      <th>Change %</th>
+    </tr>
+  </thead>
+  <tbody id="resultBody"></tbody>
+</table>
+
+<div class="empty" id="emptyMsg" style="display: none;">Tidak ada saham yang memenuhi kriteria saat ini.</div>
+
+<hr class="section-divider" />
+
+<h2>📩 Cross-Check Pesan Mentor</h2>
+<div class="sub">
+  Paste pesan mentor Anda di sini (misal dari WhatsApp). Sistem akan cari kode saham
+  yang disebut, lalu cek apakah saham itu muncul di histori scan 7 hari terakhir.
+</div>
+<textarea id="mentorInput" placeholder="Contoh: Beli BBRI area 4200, target 4500. Watch juga GOTO."></textarea>
+<br />
+<button id="crossCheckBtn">Cross-Check</button>
+
+<div class="error-box" id="mentorErrorBox"></div>
+
+<div id="mentorResultContainer"></div>
+
+<hr class="section-divider" />
+
+<h2>🕓 Histori Pesan Mentor</h2>
+<div class="sub">20 pesan terakhir yang pernah di-paste.</div>
+<div id="mentorHistoryContainer" class="mentor-result">Memuat histori...</div>
+
+<script>
+  const runBtn = document.getElementById('runBtn');
+  const idleMsg = document.getElementById('idleMsg');
+  const loadingMsg = document.getElementById('loadingMsg');
+  const emptyMsg = document.getElementById('emptyMsg');
+  const table = document.getElementById('resultTable');
+  const tbody = document.getElementById('resultBody');
+  const metaText = document.getElementById('metaText');
+  const errorBox = document.getElementById('errorBox');
+
+  function formatNumber(n) {
+    return new Intl.NumberFormat('id-ID').format(Math.round(n));
+  }
+
+  function renderRows(data) {
+    if (!data || data.length === 0) {
+      table.style.display = 'none';
+      emptyMsg.style.display = 'block';
+      return;
+    }
+    emptyMsg.style.display = 'none';
+    table.style.display = 'table';
+    tbody.innerHTML = data.map(row => {
+      const changeClass = row.priceChangePct >= 0 ? 'up' : 'down';
+      const changeSign = row.priceChangePct >= 0 ? '+' : '';
+      return `
+        <tr>
+          <td class="code">${row.code}</td>
+          <td>${formatNumber(row.volume)}</td>
+          <td>${formatNumber(row.prevVolume)}</td>
+          <td class="ratio">${row.volumeRatio.toFixed(2)}x</td>
+          <td>${formatNumber(row.price)}</td>
+          <td>${formatNumber(row.prevPrice)}</td>
+          <td class="${changeClass}">${changeSign}${row.priceChangePct.toFixed(2)}%</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  async function runScan() {
+    runBtn.disabled = true;
+    runBtn.textContent = '⏳ Memindai...';
+    idleMsg.style.display = 'none';
+    emptyMsg.style.display = 'none';
+    table.style.display = 'none';
+    loadingMsg.style.display = 'block';
+    errorBox.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/screener');
+      const json = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(json.error || `HTTP ${resp.status}`);
+      }
+
+      loadingMsg.style.display = 'none';
+      renderRows(json.data);
+
+      const scanTime = new Date(json.scannedAt).toLocaleTimeString('id-ID');
+      const durationSec = (json.durationMs / 1000).toFixed(1);
+      const saveStatus = json.saved
+        ? '✓ tersimpan ke histori'
+        : `⚠ histori tidak tersimpan (${json.saveError || 'alasan tidak diketahui'})`;
+      metaText.textContent = `Terakhir dipindai: ${scanTime} · ${json.totalScanned} saham dicek · ${json.data.length} lolos filter · durasi scan ${durationSec}s · ${saveStatus}`;
+    } catch (e) {
+      loadingMsg.style.display = 'none';
+      idleMsg.style.display = 'block';
+      errorBox.style.display = 'block';
+      errorBox.textContent = 'Gagal menjalankan scan: ' + e.message;
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = '▶ Run Scan';
+    }
+  }
+
+  runBtn.addEventListener('click', runScan);
+
+  // ===== Cross-Check Pesan Mentor =====
+  const mentorInput = document.getElementById('mentorInput');
+  const crossCheckBtn = document.getElementById('crossCheckBtn');
+  const mentorErrorBox = document.getElementById('mentorErrorBox');
+  const mentorResultContainer = document.getElementById('mentorResultContainer');
+  const mentorHistoryContainer = document.getElementById('mentorHistoryContainer');
+
+  function renderCrossCheckResult(json) {
+    const { detectedCodes, scanCrossCheck, pastMentions, receivedAt, groqUsed, groqSkipReason } = json;
+
+    const groqNote = groqUsed
+      ? '<div class="sub" style="margin-bottom: 10px;">✓ Deteksi dibantu AI (Groq) untuk memahami konteks kalimat</div>'
+      : `<div class="sub" style="margin-bottom: 10px;">⚠ Deteksi hanya pakai regex+blocklist (Groq tidak aktif${groqSkipReason ? ': ' + groqSkipReason : ''})</div>`;
+
+    if (detectedCodes.length === 0) {
+      mentorResultContainer.innerHTML = `
+        <div class="mentor-result">
+          ${groqNote}
+          Tidak ada kode saham yang terdeteksi di pesan ini. Pesan tetap disimpan
+          sebagai histori.
+        </div>
+      `;
+      return;
+    }
+
+    const codeBlocks = detectedCodes.map(code => {
+      const scanHits = (scanCrossCheck[code] || []);
+      const mentionHits = (pastMentions[code] || []).filter(m => m.received_at !== receivedAt);
+
+      let scanHtml;
+      if (scanCrossCheck._error) {
+        scanHtml = `<div class="cross-miss">⚠ Gagal cek histori scan: ${scanCrossCheck._error}</div>`;
+      } else if (scanHits.length > 0) {
+        const latest = scanHits[0];
+        scanHtml = `<div class="cross-hit">✓ Terdeteksi di scan: ratio ${Number(latest.volume_ratio).toFixed(2)}x, harga ${Math.round(latest.price)}, ${latest.passed_filter ? 'lolos filter' : 'tidak lolos filter'} (${scanHits.length}x muncul dalam 7 hari terakhir)</div>`;
+      } else {
+        scanHtml = `<div class="cross-miss">— Belum terdeteksi lonjakan volume di scan 7 hari terakhir</div>`;
+      }
+
+      let mentionHtml = '';
+      if (mentionHits.length > 0) {
+        mentionHtml = `<div class="cross-hit">🔁 Mentor pernah sebut kode ini ${mentionHits.length}x sebelumnya</div>`;
+      }
+
+      return `
+        <div style="margin-bottom: 10px;">
+          <span class="code-tag">${code}</span>
+          <button class="check-now-btn" data-code="${code}">Cek Scan Sekarang</button>
+          ${scanHtml}
+          ${mentionHtml}
+          <div class="check-now-result" data-code-result="${code}"></div>
+        </div>
+      `;
+    }).join('');
+
+    mentorResultContainer.innerHTML = `<div class="mentor-result">${groqNote}${codeBlocks}</div>`;
+
+    // Pasang event listener untuk tombol "Cek Scan Sekarang" per kode
+    mentorResultContainer.querySelectorAll('.check-now-btn').forEach(btn => {
+      btn.addEventListener('click', () => checkSingleStock(btn.dataset.code));
+    });
+  }
+
+  async function checkSingleStock(code) {
+    const resultBox = mentorResultContainer.querySelector(`[data-code-result="${code}"]`);
+    const btn = mentorResultContainer.querySelector(`.check-now-btn[data-code="${code}"]`);
+    btn.disabled = true;
+    btn.textContent = 'Mengecek...';
+    resultBox.innerHTML = '';
+
+    try {
+      const resp = await fetch(`/api/check-stock?code=${encodeURIComponent(code)}`);
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+      const r = json.result;
+      if (!r) {
+        resultBox.innerHTML = `<div class="cross-miss">Data tidak tersedia untuk ${code}</div>`;
+      } else {
+        const cls = r.volumeRatio >= 3 ? 'cross-hit' : 'cross-miss';
+        resultBox.innerHTML = `<div class="${cls}">Live: volume ratio ${r.volumeRatio.toFixed(2)}x, harga ${Math.round(r.price)} (${r.priceChangePct >= 0 ? '+' : ''}${r.priceChangePct.toFixed(2)}%)</div>`;
+      }
+    } catch (e) {
+      resultBox.innerHTML = `<div class="cross-miss">⚠ Gagal cek: ${e.message}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Cek Scan Sekarang';
+    }
+  }
+
+  async function runCrossCheck() {
+    const message = mentorInput.value.trim();
+    if (!message) return;
+
+    crossCheckBtn.disabled = true;
+    crossCheckBtn.textContent = 'Memproses...';
+    mentorErrorBox.style.display = 'none';
+    mentorResultContainer.innerHTML = '';
+
+    try {
+      const resp = await fetch('/api/mentor-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      const json = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(json.error || `HTTP ${resp.status}`);
+      }
+
+      renderCrossCheckResult(json);
+      mentorInput.value = '';
+      loadMentorHistory();
+    } catch (e) {
+      mentorErrorBox.style.display = 'block';
+      mentorErrorBox.textContent = 'Gagal cross-check: ' + e.message;
+    } finally {
+      crossCheckBtn.disabled = false;
+      crossCheckBtn.textContent = 'Cross-Check';
+    }
+  }
+
+  async function loadMentorHistory() {
+    try {
+      const resp = await fetch('/api/mentor-call');
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+      const calls = json.calls || [];
+      if (calls.length === 0) {
+        mentorHistoryContainer.textContent = 'Belum ada pesan yang di-paste.';
+        return;
+      }
+
+      mentorHistoryContainer.innerHTML = calls.map(call => {
+        const time = new Date(call.received_at).toLocaleString('id-ID');
+        const codes = (call.codes || []).map(c => `<span class="code-tag">${c}</span>`).join(' ');
+        return `
+          <div class="mentor-history-item">
+            <div class="mentor-history-time">${time}</div>
+            <div>${call.raw_message}</div>
+            <div>${codes || '<em>tidak ada kode terdeteksi</em>'}</div>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {
+      mentorHistoryContainer.textContent = 'Gagal memuat histori: ' + e.message;
+    }
+  }
+
+  crossCheckBtn.addEventListener('click', runCrossCheck);
+  loadMentorHistory();
+</script>
+
+</body>
+</html>
