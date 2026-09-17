@@ -72,6 +72,18 @@ function extractCandidatesRegex(text) {
   return [...new Set(candidates)].filter((c) => !COMMON_WORD_BLOCKLIST.has(c));
 }
 
+// Cari kalimat (dipisah . ! ? atau baris baru) yang benar-benar menyebut kode
+// ini di teks PDF — dipakai sebagai FALLBACK saat Groq tidak memberi ringkasan
+// untuk kode tsb (misal kode itu hanya lolos lewat regex, bukan lewat daftar
+// "stocks" yang dikembalikan Groq). Sebelumnya kode begini masuk watchlist
+// dengan notes: null — user tidak tahu sama sekali kenapa kode itu menarik/
+// relevan, padahal PDF-nya sendiri menyebut konteksnya di suatu tempat.
+function buildCodeContext(text, code) {
+  const sentences = text.split(/(?<=[.!?\n])\s+/).filter(Boolean);
+  const hit = sentences.find((s) => new RegExp(`\\b${code}\\b`).test(s));
+  return hit ? hit.trim().slice(0, 300) : null;
+}
+
 // Beda dengan mentor-call.js: di sini Groq juga diminta ringkasan/insight PER
 // KODE (target harga, alasan rekomendasi), bukan cuma daftar kode — karena PDF
 // riset biasanya punya konteks lebih kaya yang sayang dibuang (briefing 4.1).
@@ -196,9 +208,13 @@ async function handleUpload(req, res, supabase) {
     const merged = [...new Set([...regexCandidates, ...groqResult.codes])];
     const validated = merged.filter((code) => validCodes.has(code));
 
+    // Prioritas catatan per kode: ringkasan Groq (paling informatif) → kalau
+    // tidak ada, kalimat asli di PDF yang menyebut kode ini (fallback) → kalau
+    // benar-benar tidak ketemu di manapun, tetap null (kode cuma nongol di
+    // tabel/daftar tanpa konteks kalimat sama sekali).
     const aiNotes = {};
     for (const code of validated) {
-      aiNotes[code] = groqResult.notes[code] || null;
+      aiNotes[code] = groqResult.notes[code] || buildCodeContext(text, code) || null;
     }
 
     // 1. Simpan histori mentah — selalu, terlepas kode terdeteksi atau tidak
