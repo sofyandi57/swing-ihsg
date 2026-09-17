@@ -99,6 +99,28 @@ export default function App() {
         </div>
       </header>
 
+      {/* Nav diletakkan SEBELUM <main> di DOM (bukan sesudah) supaya di layar
+          tablet/desktop — di mana .tabbar bukan lagi position:fixed, lihat
+          styles.css — posisinya konsisten tepat di bawah header, bukan ikut
+          urutan alami setelah konten <main> yang tingginya beda-beda per tab
+          (form scan pendek vs chat panjang), yang sebelumnya bikin nav
+          kelihatan "loncat-loncat" pindah lokasi antar halaman. Di mobile,
+          position:fixed membuat urutan DOM ini tidak berpengaruh visual. */}
+      <nav className="tabbar">
+        <div className="tabbar-inner">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={`tab-btn${activeTab === tab.id ? " active" : ""}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span className="tab-icon">{tab.icon}</span>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
       <main>
         <div style={{ display: activeTab === "scan" ? "block" : "none" }}>
           <ScanTab />
@@ -121,21 +143,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      <nav className="tabbar">
-        <div className="tabbar-inner">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              className={`tab-btn${activeTab === tab.id ? " active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <span className="tab-icon">{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </nav>
     </>
   );
 }
