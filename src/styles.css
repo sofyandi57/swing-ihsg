@@ -60,6 +60,20 @@ body {
   padding: calc(12px + var(--safe-top)) 14px calc(90px + var(--safe-bottom));
 }
 
+/* Tablet: lebih lega, nav pindah jadi baris di bawah header (bukan lagi fixed
+   di bawah layar) supaya tidak makan ruang layar yang sudah lebih besar. */
+@media (min-width: 768px) {
+  #root {
+    max-width: 880px;
+    padding: calc(20px + var(--safe-top)) 24px 32px;
+  }
+}
+
+/* Desktop/web: container lebih lebar lagi, grid hasil scan bisa 2 kolom. */
+@media (min-width: 1024px) {
+  #root { max-width: 1080px; padding: calc(28px + var(--safe-top)) 32px 40px; }
+}
+
 ::selection { background: var(--accent-bg); color: var(--text); }
 
 /* ===== App header ===== */
@@ -149,6 +163,34 @@ body {
 .tab-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tab-btn.active { color: var(--accent); background: var(--accent-bg); }
 .tab-btn.active::before { transform: translateX(-50%) scaleX(1); }
+
+/* Tablet/desktop: nav lepas dari fixed-bottom, jadi baris horizontal statis
+   di bawah header — layar besar tidak perlu bottom-nav ala aplikasi mobile,
+   dan ruang di bawah tidak perlu disisakan lagi (lihat #root padding di atas). */
+@media (min-width: 768px) {
+  .tabbar {
+    position: static;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-top: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 14px;
+    margin-bottom: 18px;
+    justify-content: flex-start;
+  }
+  .tabbar-inner { max-width: none; gap: 6px; }
+  .tab-btn {
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    min-height: 40px;
+  }
+  .tab-btn::before { top: auto; bottom: -15px; }
+  .tab-btn .tab-icon { font-size: 16px; }
+}
 
 /* ===== Cards / panels ===== */
 .card {
@@ -372,4 +414,12 @@ textarea.input:focus { outline: 2px solid var(--accent); outline-offset: -1px; b
 
 @media (min-width: 480px) {
   .result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* Tablet/desktop: hasil scan dua kolom berdampingan, memanfaatkan lebar layar. */
+@media (min-width: 768px) {
+  .result-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+}
+@media (min-width: 1024px) {
+  .result-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
