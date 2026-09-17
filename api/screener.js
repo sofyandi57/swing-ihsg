@@ -656,6 +656,24 @@ async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
   await saveFreqSnapshot(supabase, snapshots);
   const baselines = await getFreqBaselines(supabase, stage1Candidates.map((r) => r.code));
 
+  // FALLBACK cold-start — kalau histori freq_baseline belum ada sama sekali
+  // (baru pertama kali mode ini dijalankan, atau kode yang belum pernah lolos
+  // Stage 1 sebelumnya), frequencyRatio jadi PERMANEN null dan strategi TIDAK
+  // PERNAH bisa lolos ("hasBaseline" selalu false) — ini bug nyata yang
+  // dilaporkan User: "Susah dapat kandidat" (selalu 0, bukan cuma jarang).
+  // Sambil histori historis terkumpul, dipakai baseline SEMENTARA dari rata-
+  // rata (median) freq/ticket_size ANTAR KANDIDAT hari ini sendiri (cross-
+  // sectional) — bukan mengarang angka, tapi memakai kandidat lain sebagai
+  // pembanding relatif sampai baseline historis per-kode tersedia. Ditandai
+  // eksplisit (baselineSource) supaya User tahu ini estimasi sementara, bukan
+  // baseline "asli" berbasis histori kode itu sendiri.
+  const validSnaps = snapshots.filter(Boolean);
+  const freqValues = validSnaps.map((s) => s.freq).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  const ticketValues = validSnaps.map((s) => s.ticketSize).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  const median = (arr) => (arr.length === 0 ? null : arr[Math.floor(arr.length / 2)]);
+  const crossSectionalFreqBaseline = median(freqValues);
+  const crossSectionalTicketBaseline = median(ticketValues);
+
   const { hour, minute } = getWibHourMinute();
   const morningWindow = inWindow(hour, minute, 8, 10);
   const afternoonWindow = inWindow(hour, minute, 15, 16);
@@ -666,8 +684,13 @@ async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
       if (!snap) return null; // gagal ambil data live — skip, jangan gagalkan seluruh scan
 
       const baseline = baselines[r.code] || { freqAnalyzer: null, baselineTicket: null, sampleDays: 0 };
-      const frequencyRatio = baseline.freqAnalyzer ? snap.freq / baseline.freqAnalyzer : null;
-      const ticketRatio = baseline.baselineTicket && snap.ticketSize ? snap.ticketSize / baseline.baselineTicket : null;
+      // Baseline historis (dari histori kode itu sendiri) diprioritaskan kalau
+      // ada — cross-sectional cuma fallback saat histori belum terkumpul.
+      const freqAnalyzer = baseline.freqAnalyzer ?? crossSectionalFreqBaseline;
+      const baselineTicket = baseline.baselineTicket ?? crossSectionalTicketBaseline;
+      const baselineSource = baseline.freqAnalyzer ? "historis" : freqAnalyzer ? "sementara (antar-kandidat hari ini)" : null;
+      const frequencyRatio = freqAnalyzer ? snap.freq / freqAnalyzer : null;
+      const ticketRatio = baselineTicket && snap.ticketSize ? snap.ticketSize / baselineTicket : null;
 
       // Klasifikasi strategi — formula PERSIS dari spek User, kecuali syarat
       // sum_bid_volume(5)/sum_offer_volume(5) (kedalaman order book 5 level)
@@ -720,7 +743,7 @@ async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
         value: snap.value,
         volume: snap.volume,
         freq: snap.freq,
-        freqAnalyzer: baseline.freqAnalyzer,
+        freqAnalyzer,
         frequencyRatio,
         ticketSize: snap.ticketSize,
         ticketRatio,
@@ -730,6 +753,7 @@ async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
         bidOfferRatioL1: snap.bidOfferRatioL1,
         closeLocation,
         baselineSampleDays: baseline.sampleDays,
+        baselineSource,
         strategies,
         recommendedWindow: {
           morningActive: morningWindow,

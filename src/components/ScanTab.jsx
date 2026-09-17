@@ -249,10 +249,17 @@ function MomentumSniperCard({ row }) {
         </div>
       </div>
 
+      {row.baselineSource === "sementara (antar-kandidat hari ini)" && (
+        <div className="cross-miss" style={{ marginTop: 8 }}>
+          ⚠ Baseline historis belum ada (kode ini belum pernah tercatat dari scan
+          sebelumnya) — rasio memakai pembanding SEMENTARA (median kandidat hari ini),
+          bukan histori kode ini sendiri. Akurasi membaik setelah dijalankan beberapa hari.
+        </div>
+      )}
       {row.frequencyRatio === null && (
         <div className="cross-miss" style={{ marginTop: 8 }}>
-          ⚠ Baseline frekuensi belum cukup data (histori dikumpulkan otomatis tiap scan —
-          jalankan scan ini beberapa hari untuk baseline yang stabil).
+          ⚠ Tidak ada data pembanding sama sekali (baik historis maupun antar-kandidat)
+          untuk menghitung rasio frekuensi.
         </div>
       )}
 
