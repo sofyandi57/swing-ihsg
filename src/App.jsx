@@ -5,7 +5,7 @@ import WatchlistTab from "./components/WatchlistTab.jsx";
 import ChartTab from "./components/ChartTab.jsx";
 import AdminTab from "./components/AdminTab.jsx";
 import LoginPage from "./components/LoginPage.jsx";
-import { supabase, authFetch } from "./lib/supabaseClient.js";
+import { supabase, authFetch, isSupabaseConfigured } from "./lib/supabaseClient.js";
 
 const BASE_TABS = [
   { id: "scan", label: "Run Scan", icon: "⚡" },
@@ -20,6 +20,7 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
+    if (!isSupabaseConfigured) return; // tampilkan pesan konfigurasi di bawah, jangan panggil auth sama sekali
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
@@ -40,6 +41,23 @@ export default function App() {
       }
     })();
   }, [session]);
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        <div className="card" style={{ maxWidth: 420 }}>
+          <h2>⚠️ Konfigurasi Belum Lengkap</h2>
+          <p className="sub" style={{ marginBottom: 0 }}>
+            Environment variable <code>VITE_SUPABASE_URL</code> dan/atau{" "}
+            <code>VITE_SUPABASE_ANON_KEY</code> belum diset di Vercel. Login tidak bisa
+            jalan tanpa ini. Set keduanya di Project Settings → Environment Variables
+            (ambil dari Supabase Dashboard → Project Settings → API — pakai anon/public
+            key, bukan service_role), lalu redeploy.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (session === undefined) {
     return (
