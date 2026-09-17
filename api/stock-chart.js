@@ -11,9 +11,12 @@
 // INVEZGO_BANDARMOLOGI_RESEARCH.md): Broker Summary Chart (D/F buy-sell),
 // Stock Inventory Chart (+ ranking broker top net-buy/sell hasil olahan kita),
 // Stock Distribution/Sankey Chart (crossing hari ini), Stock Momentum Chart
-// (arus beli/jual intraday), dan tiga endpoint kepemilikan (>5%, >1%, insider
-// IDX). Tiap dimensi di-fetch independen — satu gagal tidak menggagalkan yang
-// lain.
+// (arus beli/jual intraday), tiga endpoint kepemilikan (>5%, >1%, insider
+// IDX), dan tape reading: Order Book (bid/offer level 1 realtime), Order
+// Queue (antrean di best bid/best offer — otomatis diambil dari harga Order
+// Book, bukan input manual), dan Running Trade (time & sales/tape, 50
+// transaksi terakhir hari ini). Tiap dimensi di-fetch independen — satu
+// gagal tidak menggagalkan yang lain.
 //
 // Timeframe yang didukung Invezgo (/analysis/chart/multi-time/{code}):
 //   1, 5, 15, 30, 60 (menit), D (daily), W (weekly), M (monthly)
@@ -99,15 +102,18 @@ async function handleBandarmologi(req, res) {
   const lookbackDays = Number(req.query?.lookbackDays) || 30;
   const from = ymd(new Date(today.getTime() - lookbackDays * 24 * 60 * 60 * 1000));
 
-  const [summary, inventory, sankey, momentum, ownAbove, ownOne, ownInsider] = await Promise.allSettled([
-    invezgoGetRaw(`/analysis/summary-chart/stock/${code}`, { from, to: todayStr, scope: "value", market: "RG" }),
-    invezgoGetRaw(`/analysis/inventory-chart/stock/${code}`, { from, to: todayStr, scope: "val", investor: "all", market: "ALL" }),
-    invezgoGetRaw(`/analysis/sankey-chart/${code}`, { date: todayStr, type: "value", buyer: "ALL", seller: "ALL", market: "RG" }),
-    invezgoGetRaw(`/analysis/momentum-chart/${code}`, { date: todayStr, range: "15", scope: "value" }),
-    invezgoGetRaw(`/analysis/shareholder-above`, { code, from, to: todayStr, limit: 20 }),
-    invezgoGetRaw(`/analysis/shareholder-one`, { code, from, to: todayStr, limit: 20 }),
-    invezgoGetRaw(`/analysis/shareholder-insider`, { code, from, to: todayStr, limit: 20 }),
-  ]);
+  const [summary, inventory, sankey, momentum, ownAbove, ownOne, ownInsider, orderBook, runningTrade] =
+    await Promise.allSettled([
+      invezgoGetRaw(`/analysis/summary-chart/stock/${code}`, { from, to: todayStr, scope: "value", market: "RG" }),
+      invezgoGetRaw(`/analysis/inventory-chart/stock/${code}`, { from, to: todayStr, scope: "val", investor: "all", market: "ALL" }),
+      invezgoGetRaw(`/analysis/sankey-chart/${code}`, { date: todayStr, type: "value", buyer: "ALL", seller: "ALL", market: "RG" }),
+      invezgoGetRaw(`/analysis/momentum-chart/${code}`, { date: todayStr, range: "15", scope: "value" }),
+      invezgoGetRaw(`/analysis/shareholder-above`, { code, from, to: todayStr, limit: 20 }),
+      invezgoGetRaw(`/analysis/shareholder-one`, { code, from, to: todayStr, limit: 20 }),
+      invezgoGetRaw(`/analysis/shareholder-insider`, { code, from, to: todayStr, limit: 20 }),
+      invezgoGetRaw(`/analysis/order-book/${code}`, { market: "RG" }),
+      invezgoGetRaw(`/analysis/running-trade/${code}`, { date: todayStr, page: 1, limit: 50, sort: "DESC", orderby: "TIME", market: "RG" }),
+    ]);
 
   function pack(result) {
     if (result.status === "fulfilled") return { ok: true, data: result.value };
@@ -123,6 +129,24 @@ async function handleBandarmologi(req, res) {
   const ownAbovePacked = pack(ownAbove);
   const ownOnePacked = pack(ownOne);
   const ownInsiderPacked = pack(ownInsider);
+  const orderBookPacked = pack(orderBook);
+  const runningTradePacked = pack(runningTrade);
+
+  // Order Queue butuh price+side spesifik — otomatis diarahkan ke best
+  // bid/offer dari Order Book di atas (antrean paling depan, paling relevan
+  // untuk tape reading), bukan dipanggil dulu terpisah tanpa konteks harga.
+  let queueBuy = { ok: false, error: "Order Book tidak tersedia — tidak bisa tentukan harga antrean." };
+  let queueSell = { ok: false, error: "Order Book tidak tersedia — tidak bisa tentukan harga antrean." };
+  if (orderBookPacked.ok) {
+    const bestBid = orderBookPacked.data?.bid?.[0]?.bid1price;
+    const bestOffer = orderBookPacked.data?.offer?.[0]?.offer1price;
+    const [qb, qs] = await Promise.allSettled([
+      bestBid ? invezgoGetRaw(`/analysis/queue/${code}`, { price: bestBid, side: "BUY", limit: 20 }) : Promise.reject(new Error("Tidak ada best bid.")),
+      bestOffer ? invezgoGetRaw(`/analysis/queue/${code}`, { price: bestOffer, side: "SELL", limit: 20 }) : Promise.reject(new Error("Tidak ada best offer.")),
+    ]);
+    queueBuy = { ...pack(qb), price: bestBid };
+    queueSell = { ...pack(qs), price: bestOffer };
+  }
 
   const narrative = await generateBandarmologiNarrative({
     code,
@@ -134,6 +158,8 @@ async function handleBandarmologi(req, res) {
     ownershipAbove: ownAbovePacked.ok ? ownAbovePacked.data?.data : null,
     ownershipOne: ownOnePacked.ok ? ownOnePacked.data?.data : null,
     ownershipInsider: ownInsiderPacked.ok ? ownInsiderPacked.data?.data : null,
+    orderBook: orderBookPacked.ok ? orderBookPacked.data : null,
+    runningTrade: runningTradePacked.ok ? runningTradePacked.data?.data?.slice(0, 20) : null,
   });
 
   res.setHeader("Cache-Control", "no-store");
@@ -150,6 +176,10 @@ async function handleBandarmologi(req, res) {
     ownershipAbove: ownAbovePacked,
     ownershipOne: ownOnePacked,
     ownershipInsider: ownInsiderPacked,
+    orderBook: orderBookPacked,
+    runningTrade: runningTradePacked,
+    queueBuy,
+    queueSell,
   });
 }
 
@@ -178,6 +208,8 @@ async function generateBandarmologiNarrative(ctx) {
     topBrokerDistribusi: topSell,
     crossingBrokerHariIni: topCrossing,
     perubahanKepemilikan: ownershipChanges,
+    orderBookTerkini: ctx.orderBook,
+    tapeTerakhir: ctx.runningTrade,
   };
 
   try {
@@ -191,15 +223,18 @@ async function generateBandarmologiNarrative(ctx) {
             role: "system",
             content:
               "Anda analis bandarmologi pasar saham Indonesia (IDX/BEI). Diberi data jejak broker " +
-              "(ranking akumulasi/distribusi broker, crossing antar-broker hari ini, dan perubahan " +
-              "kepemilikan >5%/>1%/insider) untuk SATU saham, buat kesimpulan naratif 3-5 kalimat " +
-              "dalam Bahasa Indonesia: (1) apakah pola menunjukkan akumulasi, distribusi, atau netral, " +
+              "(ranking akumulasi/distribusi broker, crossing antar-broker hari ini, perubahan " +
+              "kepemilikan >5%/>1%/insider, order book bid/offer terkini, dan tape/running-trade " +
+              "transaksi terakhir) untuk SATU saham, buat kesimpulan naratif 4-6 kalimat dalam Bahasa " +
+              "Indonesia: (1) apakah pola menunjukkan akumulasi, distribusi, atau netral, " +
               "(2) broker mana yang paling dominan dan apakah polanya konsisten (bukan cuma satu hari), " +
               "(3) apakah crossing hari ini dan perubahan kepemilikan MENDUKUNG atau BERTENTANGAN " +
-              "dengan pola broker di atas (validasi silang). Kalau data kosong/tidak cukup di suatu " +
-              "dimensi, sebutkan itu jujur, jangan mengarang. JANGAN memberi saran beli/jual eksplisit " +
-              "— ini alat bantu baca data, bukan rekomendasi transaksi. Gaya bahasa ringkas seperti " +
-              "catatan analis ke rekan kerja.",
+              "dengan pola broker di atas (validasi silang), (4) dari tape/order book: apakah tekanan " +
+              "beli atau jual yang dominan di harga terkini (misal lot bid jauh lebih besar dari offer, " +
+              "atau sebaliknya), dan apakah transaksi tape besar terakhir searah dengan pola akumulasi/" +
+              "distribusi di atas. Kalau data kosong/tidak cukup di suatu dimensi, sebutkan itu jujur, " +
+              "jangan mengarang. JANGAN memberi saran beli/jual eksplisit — ini alat bantu baca data, " +
+              "bukan rekomendasi transaksi. Gaya bahasa ringkas seperti catatan analis ke rekan kerja.",
           },
           { role: "user", content: JSON.stringify(payload) },
         ],

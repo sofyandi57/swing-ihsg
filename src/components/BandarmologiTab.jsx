@@ -161,6 +161,112 @@ function OwnershipTable({ section, columns }) {
   );
 }
 
+function OrderBookSection({ section }) {
+  if (!section.ok) return <ErrorNote section={section} />;
+  const bid = section.data?.bid?.[0];
+  const offer = section.data?.offer?.[0];
+  if (!bid && !offer) return <div className="bdm-empty">Order book kosong/pasar tutup.</div>;
+  const bidLot = Number(bid?.bid1lot) || 0;
+  const offerLot = Number(offer?.offer1lot) || 0;
+  const ratioItems = [
+    { label: "Bid (Beli)", value: bidLot },
+    { label: "Offer (Jual)", value: offerLot },
+  ];
+  return (
+    <div>
+      <div className="bdm-two-col">
+        <div>
+          <div className="bdm-subtitle">BEST BID</div>
+          <div className="bdm-bookprice bdm-bookprice-bid">{fmtNum(bid?.bid1price)}</div>
+          <div className="bdm-empty">{fmtNum(bidLot)} lot · {fmtNum(bid?.bid1freq)} order</div>
+        </div>
+        <div>
+          <div className="bdm-subtitle">BEST OFFER</div>
+          <div className="bdm-bookprice bdm-bookprice-offer">{fmtNum(offer?.offer1price)}</div>
+          <div className="bdm-empty">{fmtNum(offerLot)} lot · {fmtNum(offer?.offer1freq)} order</div>
+        </div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <div className="bdm-subtitle">TEKANAN BID VS OFFER (lot)</div>
+        <BarChart items={ratioItems} colorFor={(it) => (it.label.startsWith("Bid") ? "#22c55e" : "#ef4444")} />
+      </div>
+    </div>
+  );
+}
+
+function OrderQueueSection({ queueBuy, queueSell }) {
+  const buyRows = queueBuy?.ok ? queueBuy.data?.slice(0, 8) || [] : [];
+  const sellRows = queueSell?.ok ? queueSell.data?.slice(0, 8) || [] : [];
+  return (
+    <div className="bdm-two-col">
+      <div>
+        <div className="bdm-subtitle">ANTREAN DI BID {queueBuy?.price ? fmtNum(queueBuy.price) : ""}</div>
+        {!queueBuy?.ok ? (
+          <ErrorNote section={queueBuy || { ok: false, error: "tidak tersedia" }} />
+        ) : buyRows.length === 0 ? (
+          <div className="bdm-empty">Tidak ada antrean.</div>
+        ) : (
+          buyRows.map((r, i) => (
+            <div key={i} className="bdm-queue-row">
+              <span>{r.time}</span>
+              <span>{fmtNum(r.order_volume)} lot</span>
+            </div>
+          ))
+        )}
+      </div>
+      <div>
+        <div className="bdm-subtitle">ANTREAN DI OFFER {queueSell?.price ? fmtNum(queueSell.price) : ""}</div>
+        {!queueSell?.ok ? (
+          <ErrorNote section={queueSell || { ok: false, error: "tidak tersedia" }} />
+        ) : sellRows.length === 0 ? (
+          <div className="bdm-empty">Tidak ada antrean.</div>
+        ) : (
+          sellRows.map((r, i) => (
+            <div key={i} className="bdm-queue-row">
+              <span>{r.time}</span>
+              <span>{fmtNum(r.order_volume)} lot</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RunningTradeSection({ section }) {
+  if (!section.ok) return <ErrorNote section={section} />;
+  const rows = section.data?.data || [];
+  if (rows.length === 0) return <div className="bdm-empty">Belum ada transaksi tercatat hari ini.</div>;
+  return (
+    <div className="bdm-table-wrap">
+      <table className="bdm-table">
+        <thead>
+          <tr>
+            <th>Waktu</th>
+            <th>Harga</th>
+            <th>Lot</th>
+            <th>Beli</th>
+            <th>Jual</th>
+            <th>Tipe</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 20).map((r, i) => (
+            <tr key={i}>
+              <td>{r.time}</td>
+              <td>{fmtNum(r.price)}</td>
+              <td>{fmtNum(r.volume)}</td>
+              <td>{r.buyer}{r.buyer_dom ? ` (${r.buyer_dom})` : ""}</td>
+              <td>{r.seller}{r.seller_dom ? ` (${r.seller_dom})` : ""}</td>
+              <td style={{ color: r.type === "BUY" ? "var(--green)" : "var(--red)" }}>{r.type}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Candlestick 1 tahun + garis S/R, dirender di dalam Laporan Lengkap — sama
 // persis library & pola visual dengan ChartTab.jsx (lightweight-charts),
 // supaya identitas visual chart konsisten di seluruh app.
@@ -313,6 +419,21 @@ export default function BandarmologiTab() {
           <div className="bdm-report-section">
             <h3>⚡ Arus Beli/Jual Intraday</h3>
             <MomentumSection section={result.momentumChart} />
+          </div>
+
+          <div className="bdm-report-section">
+            <h3>📖 Order Book (Bid/Offer Terkini)</h3>
+            <OrderBookSection section={result.orderBook} />
+          </div>
+
+          <div className="bdm-report-section">
+            <h3>📋 Antrean di Best Bid/Offer</h3>
+            <OrderQueueSection queueBuy={result.queueBuy} queueSell={result.queueSell} />
+          </div>
+
+          <div className="bdm-report-section">
+            <h3>🎞️ Tape (Running Trade — 20 Transaksi Terakhir)</h3>
+            <RunningTradeSection section={result.runningTrade} />
           </div>
 
           <div className="bdm-report-section">

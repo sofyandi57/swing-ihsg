@@ -538,6 +538,22 @@ input.input::placeholder { color: var(--muted-2); }
   color: var(--text);
 }
 .bdm-table tr:hover td { background: var(--panel-hover); }
+.bdm-bookprice {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.bdm-bookprice-bid { color: var(--green); }
+.bdm-bookprice-offer { color: var(--red); }
+.bdm-queue-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.bdm-queue-row:last-child { border-bottom: none; }
 
 @media (max-width: 480px) {
   .bdm-two-col { grid-template-columns: 1fr; }
