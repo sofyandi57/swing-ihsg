@@ -35,7 +35,14 @@
 //                                    header "Authorization: Bearer <CRON_SECRET>" (env var, set
 //                                    sendiri di Vercel project settings) SEBAGAI GANTI token admin
 //                                    biasa — cuma berlaku untuk resource ini, bukan resource admin
-//                                    lain.
+//                                    lain. PENTING: saat dipicu CRON (bukan klik manual admin),
+//                                    endpoint ini CEK DULU sisa kuota (GET /usage/api, 1 request
+//                                    murah) dan SKIP TOTAL kalau kuota terpakai masih di bawah
+//                                    QUOTA_FLUSH_THRESHOLD_PCT (env var, default 80%) — jadi cron
+//                                    harian cuma benar-benar flush saat kuota mepet, bukan flush
+//                                    buta tiap hari tanpa syarat. Klik manual dari Admin panel
+//                                    TIDAK kena gate ini (keputusan sadar user). ?force=true
+//                                    melewati gate ini (buat testing cron).
 // GET  ?resource=quota-flush&action=export — admin ATAU cron secret. Export SEMUA data yang
 //                                    sudah terkumpul di quota_flush_data sebagai CSV, TANPA
 //                                    memanggil Invezgo sama sekali (baca database saja).
@@ -414,6 +421,34 @@ async function handleQuotaFlush(req, res, supabase) {
   if (!INVEZGO_API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
     return;
+  }
+
+  // Cron TIDAK boleh flush buta tiap hari — cek dulu sisa kuota (1 request
+  // murah, TIDAK dipacing/dihitung ke budget di bawah) dan SKIP total kalau
+  // belum mendekati limit. Ini yang membedakan "flush kalau kuota mepet" dari
+  // "flush terjadwal tiap hari tanpa syarat" (User eksplisit menolak yang
+  // kedua). Klik manual dari Admin panel TIDAK kena gate ini — itu keputusan
+  // sadar user, bukan otomatis. ?force=true bisa dipakai admin untuk lewati
+  // gate ini saat testing, meski dipanggil via cron secret.
+  const QUOTA_FLUSH_THRESHOLD_PCT = Number(process.env.QUOTA_FLUSH_THRESHOLD_PCT) || 80;
+  if (isCron && req.query?.force !== "true") {
+    try {
+      const usage = await invezgoGet("/usage/api");
+      const pct = usage.limit ? (usage.usage / usage.limit) * 100 : 0;
+      if (pct < QUOTA_FLUSH_THRESHOLD_PCT) {
+        res.status(200).json({
+          skipped: true,
+          reason: `Kuota terpakai baru ${pct.toFixed(1)}% dari limit (ambang ${QUOTA_FLUSH_THRESHOLD_PCT}%) — flush tidak perlu dijalankan hari ini.`,
+          usage,
+        });
+        return;
+      }
+    } catch (e) {
+      // Gagal cek kuota sendiri — lebih aman SKIP daripada flush buta tanpa
+      // tahu kondisi kuota saat ini.
+      res.status(200).json({ skipped: true, reason: `Gagal cek kuota sebelum flush: ${String(e.message || e)}` });
+      return;
+    }
   }
 
   const requestedMax = Number(req.query?.maxRequests);
