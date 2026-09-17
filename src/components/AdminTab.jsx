@@ -433,6 +433,57 @@ function QuotaGaugeSection() {
   );
 }
 
+function BrokerTierCheckSection() {
+  const [status, setStatus] = useState("idle"); // idle | loading | done | error
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+
+  async function runCheck() {
+    setStatus("loading");
+    setError("");
+    setResult(null);
+    try {
+      const resp = await authFetch(`/api/admin?resource=broker-tier-check`);
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setResult(json);
+      setStatus("done");
+    } catch (e) {
+      setError(e.message);
+      setStatus("error");
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>🕵️ Cek Tier Bandarmologi (Admin)</h2>
+      <p className="sub">
+        Tes satu kali panggil endpoint broker termurah (<code>/analysis/list/broker</code>) untuk
+        konfirmasi apakah tier akun Invezgo saat ini bisa akses endpoint broker/insider (dokumentasi
+        menandai semua endpoint bandarmologi butuh tier Enterprise, tapi tidak jelas apakah itu
+        gating akses total atau cuma pembatasan histori). TIDAK menyimpan data apa pun.
+      </p>
+      <button className="btn btn-ghost btn-block" onClick={runCheck} disabled={status === "loading"}>
+        {status === "loading" ? "⏳ Mengecek..." : "🔍 Jalankan Tes"}
+      </button>
+      {error && <div className="error-box">Gagal: {error}</div>}
+      {result && (
+        <div
+          className={result.accessible ? "cross-hit" : "error-box"}
+          style={{ marginTop: 10 }}
+        >
+          <b>HTTP {result.httpStatus}</b> — {result.verdict}
+          {result.bodyPreview && (
+            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 12 }}>
+              {JSON.stringify(result.bodyPreview, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QuotaFlushSection() {
   const [status, setStatus] = useState("idle"); // idle | loading | error
   const [error, setError] = useState("");
@@ -552,6 +603,7 @@ export default function AdminTab() {
       <UsersSection />
       <ActivitySection />
       <QuotaGaugeSection />
+      <BrokerTierCheckSection />
       <QuotaFlushSection />
       <SettingsSection />
       <SecretsSection />

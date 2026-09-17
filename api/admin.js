@@ -627,6 +627,51 @@ async function handleQuotaUsage(req, res, supabase) {
   }
 }
 
+// GET  ?resource=broker-tier-check — admin only. Test SATU KALI panggil
+// endpoint bandarmologi termurah (/analysis/list/broker, tanpa parameter)
+// untuk konfirmasi apakah tier akun Invezgo saat ini (Advance) bisa akses
+// endpoint broker/insider sama sekali, atau butuh upgrade ke Enterprise
+// (dokumentasi Invezgo tandai SEMUA endpoint broker/insider dengan
+// "[ENTERPRISE]" tanpa menjelaskan apakah itu gating akses total atau cuma
+// pembatasan histori). TIDAK menyimpan data apa pun, cuma cek status.
+async function handleBrokerTierCheck(req, res, supabase) {
+  const admin = await requireAdmin(req, res, supabase);
+  if (!admin) return;
+
+  if (!INVEZGO_API_KEY) {
+    res.status(500).json({ error: "INVEZGO_API_KEY belum dikonfigurasi." });
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${INVEZGO_BASE_URL}/analysis/list/broker`, {
+      headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` },
+    });
+    const bodyText = await resp.text();
+    let bodyPreview = bodyText;
+    try {
+      const parsed = JSON.parse(bodyText);
+      bodyPreview = Array.isArray(parsed) ? parsed.slice(0, 3) : parsed;
+    } catch (e) {
+      // bukan JSON, biarkan bodyPreview jadi teks mentah
+    }
+
+    res.status(200).json({
+      httpStatus: resp.status,
+      accessible: resp.ok,
+      verdict:
+        resp.status === 402
+          ? "Tier akun TIDAK CUKUP — endpoint broker/insider butuh upgrade ke Enterprise."
+          : resp.ok
+            ? "Tier akun CUKUP — endpoint broker/insider bisa diakses."
+            : `Status tidak terduga (${resp.status}) — cek bodyPreview.`,
+      bodyPreview,
+    });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
+  }
+}
+
 export default async function handler(req, res) {
   const supabase = getAdminClient();
   if (!supabase) {
@@ -661,7 +706,13 @@ export default async function handler(req, res) {
     case "quota-usage":
       await handleQuotaUsage(req, res, supabase);
       return;
+    case "broker-tier-check":
+      await handleBrokerTierCheck(req, res, supabase);
+      return;
     default:
-      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush, quota-usage." });
+      res.status(400).json({
+        error:
+          "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush, quota-usage, broker-tier-check.",
+      });
   }
 }
