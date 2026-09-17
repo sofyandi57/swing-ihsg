@@ -77,7 +77,7 @@ export default function ChartTab() {
   const priceLinesRef = useRef([]); // garis S/R + Fibonacci yang sedang tergambar — perlu di-remove manual sebelum gambar ulang
 
   const [code, setCode] = useState("BBCA");
-  const [inputValue, setInputValue] = useState("BBCA");
+  const [inputValue, setInputValue] = useState("");
   const [timeframe, setTimeframe] = useState("D");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");

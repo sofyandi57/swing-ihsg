@@ -26,7 +26,7 @@ function SigItem({ sig }) {
 }
 
 export default function DashboardTab() {
-  const [inputValue, setInputValue] = useState("BBCA");
+  const [inputValue, setInputValue] = useState("");
   const [code, setCode] = useState("BBCA");
   const [mode, setMode] = useState("swing");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
