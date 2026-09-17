@@ -31,6 +31,9 @@
     },
     "api/dashboard.js": {
       "maxDuration": 30
+    },
+    "api/chatbot.js": {
+      "maxDuration": 30
     }
   }
 }
