@@ -23,7 +23,7 @@ const MIN_VOLUME_RATIO = 3.0;
 const MIN_PREV_VOLUME = 1_000_000;
 const MIN_PRICE = 50;
 const TOP_N = 25;
-const CONCURRENCY = 10; // request paralel ke Invezgo per batch — jangan terlalu tinggi
+const CONCURRENCY = 20; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 
 async function invezgoGet(path, params = {}) {
   const url = new URL(INVEZGO_BASE_URL + path);
@@ -43,6 +43,28 @@ async function invezgoGet(path, params = {}) {
 
 function ymd(date) {
   return date.toISOString().slice(0, 10);
+}
+
+// Worker pool dengan slot yang SELALU terisi — begitu satu task selesai, slot
+// langsung diisi task berikutnya. Ini jauh lebih cepat daripada batch tetap
+// (ambil 10, tunggu SEMUA 10 selesai, baru ambil 10 lagi) karena batch tetap
+// membiarkan slot menganggur selama menunggu request paling lambat di batch
+// itu — dengan latensi Invezgo yang bervariasi per saham, ini idle time yang
+// signifikan dikalikan ~90 batch.
+async function runPool(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runNext() {
+    const i = nextIndex++;
+    if (i >= items.length) return;
+    results[i] = await worker(items[i]);
+    await runNext();
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, runNext);
+  await Promise.all(workers);
+  return results;
 }
 
 // Subsector TIDAK ada di /analysis/list/stock (cuma sector) — perlu panggilan
@@ -106,12 +128,8 @@ async function runFullScan() {
   const codes = stockList.map((s) => s.code);
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
 
-  const rawResults = [];
-  for (let i = 0; i < codes.length; i += CONCURRENCY) {
-    const batch = codes.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(batch.map(getLastTwoDays));
-    rawResults.push(...batchResults.filter(Boolean));
-  }
+  const pooledResults = await runPool(codes, CONCURRENCY, getLastTwoDays);
+  const rawResults = pooledResults.filter(Boolean);
 
   // Hitung rasio & tandai lolos filter atau tidak — INI SEMUA SAHAM, belum di-slice.
   // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
@@ -208,7 +226,7 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
 }
 
 export const config = {
-  maxDuration: 120, // detik — scan 900 saham dengan concurrency 10 biasanya jauh di bawah ini
+  maxDuration: 120, // detik — scan 900 saham dengan pool concurrency 20 biasanya jauh di bawah ini
 };
 
 export default async function handler(req, res) {
