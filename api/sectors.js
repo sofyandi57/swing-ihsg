@@ -22,6 +22,20 @@ async function invezgoGet(path) {
   return resp.json();
 }
 
+// Cache in-memory (per warm lambda instance) untuk /analysis/list/stock — lihat
+// screener.js untuk rasionalnya. Daftar saham praktis statis, TTL 1 jam.
+let _stockListCache = null;
+let _stockListCachedAt = 0;
+const STOCK_LIST_TTL_MS = 60 * 60 * 1000;
+
+async function getStockListCached() {
+  const now = Date.now();
+  if (_stockListCache && now - _stockListCachedAt < STOCK_LIST_TTL_MS) return _stockListCache;
+  _stockListCache = await invezgoGet("/analysis/list/stock");
+  _stockListCachedAt = now;
+  return _stockListCache;
+}
+
 async function runPool(items, concurrency, worker) {
   const results = new Array(items.length);
   let nextIndex = 0;
@@ -49,7 +63,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const stockList = await invezgoGet("/analysis/list/stock");
+    const stockList = await getStockListCached();
     const sector = req.query?.sector;
 
     if (!sector) {

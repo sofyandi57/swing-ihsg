@@ -43,13 +43,24 @@ function getSupabaseClient() {
   });
 }
 
+// Cache in-memory (per warm lambda instance) — lihat mentor-call.js untuk
+// rasionalnya. Daftar saham praktis statis, TTL 1 jam.
+let _validCodesCache = null;
+let _validCodesCachedAt = 0;
+const VALID_CODES_TTL_MS = 60 * 60 * 1000;
+
 async function getValidStockCodes() {
+  const now = Date.now();
+  if (_validCodesCache && now - _validCodesCachedAt < VALID_CODES_TTL_MS) return _validCodesCache;
+
   const resp = await fetch(`${INVEZGO_BASE_URL}/analysis/list/stock`, {
     headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` },
   });
   if (!resp.ok) throw new Error(`Gagal ambil daftar saham: HTTP ${resp.status}`);
   const stocks = await resp.json();
-  return new Set(stocks.map((s) => s.code.toUpperCase()));
+  _validCodesCache = new Set(stocks.map((s) => s.code.toUpperCase()));
+  _validCodesCachedAt = now;
+  return _validCodesCache;
 }
 
 // Sama seperti mentor-call.js: JANGAN text.toUpperCase() dulu — itu bikin kata

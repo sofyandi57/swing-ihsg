@@ -154,6 +154,23 @@ async function invezgoGet(path, params = {}) {
   return resp.json();
 }
 
+// Cache in-memory (per warm lambda instance) untuk /analysis/list/stock — daftar
+// ~900 saham resmi ini praktis statis (cuma berubah kalau ada listing/delisting
+// baru), tapi sebelumnya di-fetch ULANG di setiap scan, termasuk saat container
+// masih warm dari request sebelumnya beberapa detik lalu. TTL 1 jam cukup aman
+// dan langsung memangkas satu hit Invezgo penuh per scan.
+let _stockListCache = null;
+let _stockListCachedAt = 0;
+const STOCK_LIST_TTL_MS = 60 * 60 * 1000;
+
+async function getStockListCached() {
+  const now = Date.now();
+  if (_stockListCache && now - _stockListCachedAt < STOCK_LIST_TTL_MS) return _stockListCache;
+  _stockListCache = await invezgoGet("/analysis/list/stock");
+  _stockListCachedAt = now;
+  return _stockListCache;
+}
+
 function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -288,7 +305,7 @@ async function getDailyMetrics(code, lookbackDays = 10) {
 //                  volume 20 hari sebelumnya (butuh >=23 hari data — lihat
 //                  getDailyMetrics)
 async function runScan({ mode, sector, subsector, minValue, minRatio }) {
-  const stockList = await invezgoGet("/analysis/list/stock");
+  const stockList = await getStockListCached();
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
 
   let codes = stockList.map((s) => s.code);

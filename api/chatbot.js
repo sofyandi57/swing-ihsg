@@ -37,13 +37,30 @@ async function invezgoGet(path) {
   return resp.json();
 }
 
-// Deteksi kode saham yang disebut di pesan (regex sama seperti mentor-call.js),
-// divalidasi ke daftar saham resmi supaya kata umum 4-huruf tidak salah tangkap.
+// Cache in-memory (per warm lambda instance) untuk /analysis/list/stock — lihat
+// screener.js untuk rasionalnya. Daftar saham praktis statis, TTL 1 jam.
+let _stockListCache = null;
+let _stockListCachedAt = 0;
+const STOCK_LIST_TTL_MS = 60 * 60 * 1000;
+
+async function getStockListCached() {
+  const now = Date.now();
+  if (_stockListCache && now - _stockListCachedAt < STOCK_LIST_TTL_MS) return _stockListCache;
+  _stockListCache = await invezgoGet("/analysis/list/stock");
+  _stockListCachedAt = now;
+  return _stockListCache;
+}
+
+// Deteksi kode saham yang disebut di pesan — regex TANPA text.toUpperCase() dulu
+// (sama seperti fix di mentor-call.js/pdf-watchlist.js): kalau di-uppercase dulu,
+// kata Title-Case biasa ("Jawa", "Naik") ikut ter-uppercase dan bisa salah kena
+// tangkap kalau kebetulan cocok kode ticker resmi. Kode saham asli selalu sudah
+// FULL CAPS di teks aslinya, jadi mempertahankan case adalah sinyal pembeda.
 async function extractMentionedCodes(text) {
-  const candidates = [...new Set((text.toUpperCase().match(/\b[A-Z]{4}\b/g) || []))];
+  const candidates = [...new Set((text.match(/\b[A-Z]{4}\b/g) || []))];
   if (candidates.length === 0) return [];
   try {
-    const stockList = await invezgoGet("/analysis/list/stock");
+    const stockList = await getStockListCached();
     const validCodes = new Set(stockList.map((s) => s.code.toUpperCase()));
     return candidates.filter((c) => validCodes.has(c)).slice(0, 3); // maks 3 kode per pesan, biar tidak berat
   } catch (e) {

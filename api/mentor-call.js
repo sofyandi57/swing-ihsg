@@ -45,13 +45,26 @@ function getSupabaseClient() {
 // kebetulan 4 huruf kapital (misal "AREA", "JUAL", "BUMN") tidak salah terdeteksi
 // sebagai kode saham. Di-cache in-memory per invocation (tidak lintas-request), jadi
 // tiap panggilan tetap fetch ulang — untuk pemakaian sesekali sehari ini cukup ringan.
+// Cache in-memory (per warm lambda instance) — daftar ~900 saham resmi praktis
+// statis, tapi sebelumnya di-fetch ULANG di setiap cross-check pesan mentor,
+// bahkan saat beberapa pesan di-paste berturut-turut dalam hitungan detik.
+// TTL 1 jam langsung memangkas satu hit Invezgo penuh per cross-check.
+let _validCodesCache = null;
+let _validCodesCachedAt = 0;
+const VALID_CODES_TTL_MS = 60 * 60 * 1000;
+
 async function getValidStockCodes() {
+  const now = Date.now();
+  if (_validCodesCache && now - _validCodesCachedAt < VALID_CODES_TTL_MS) return _validCodesCache;
+
   const resp = await fetch(`${INVEZGO_BASE_URL}/analysis/list/stock`, {
     headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` },
   });
   if (!resp.ok) throw new Error(`Gagal ambil daftar saham: HTTP ${resp.status}`);
   const stocks = await resp.json();
-  return new Set(stocks.map((s) => s.code.toUpperCase()));
+  _validCodesCache = new Set(stocks.map((s) => s.code.toUpperCase()));
+  _validCodesCachedAt = now;
+  return _validCodesCache;
 }
 
 // Kata bahasa Indonesia/Inggris umum yang sering muncul dalam huruf kapital di teks
