@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { supabase } from "../lib/supabaseClient.js";
+import { supabase, authFetch } from "../lib/supabaseClient.js";
+
+// Best-effort — dipanggil setelah session berhasil terbentuk (login berhasil,
+// atau signUp yang langsung login otomatis). Gagal mencatat tidak boleh
+// menghalangi user masuk ke aplikasi.
+function logActivity(event) {
+  authFetch("/api/admin?resource=activity", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event }),
+  }).catch(() => {});
+}
 
 export default function LoginPage() {
   const [mode, setMode] = useState("login"); // login | register
@@ -23,6 +34,7 @@ export default function LoginPage() {
         return;
       }
       // Berhasil — App.jsx mendengarkan onAuthStateChange, tidak perlu redirect manual
+      logActivity("login");
     } else {
       // Daftar akun baru — user hasil signUp SELALU non-admin (tabel app_admins
       // hanya diisi manual oleh admin lewat SQL Editor), jadi aman dibuka untuk
@@ -35,6 +47,7 @@ export default function LoginPage() {
       }
       if (data.session) {
         // Konfirmasi email nonaktif di project ini — langsung login otomatis
+        logActivity("login");
         return;
       }
       setRegisterNotice("Akun dibuat. Cek email untuk konfirmasi, lalu masuk di sini.");

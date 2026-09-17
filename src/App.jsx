@@ -16,6 +16,23 @@ const BASE_TABS = [
   { id: "watchlist", label: "Watchlist", icon: "⭐" },
 ];
 
+// Catat event logout SEBELUM signOut() benar-benar menghapus session — kalau
+// urutannya dibalik, token sudah tidak valid lagi saat authFetch mencoba
+// mengirim requestnya. Best-effort: gagal mencatat tidak boleh menghalangi
+// user keluar dari aplikasi.
+async function handleLogout() {
+  try {
+    await authFetch("/api/admin?resource=activity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: "logout" }),
+    });
+  } catch (e) {
+    // diamkan
+  }
+  await supabase.auth.signOut();
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("scan");
   const [session, setSession] = useState(undefined); // undefined = belum dicek, null = belum login
@@ -96,7 +113,7 @@ export default function App() {
               🛠️
             </button>
           )}
-          <button className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
+          <button className="btn btn-ghost" onClick={handleLogout}>
             Logout
           </button>
         </div>

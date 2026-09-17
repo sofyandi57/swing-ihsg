@@ -16,6 +16,11 @@
 // POST ?resource=settings          — update satu parameter { key, value } (admin only)
 // GET  ?resource=history           — ringkasan scan_runs/mentor_calls/pdf_extracts terakhir (admin only)
 // GET  ?resource=secrets           — status ADA/TIDAK env var penting, BUKAN nilainya (admin only)
+// GET  ?resource=activity          — log login/logout semua user, terbaru dulu (admin only)
+// POST ?resource=activity          — catat SATU event { event: "login"|"logout" } milik diri
+//                                    sendiri (bukan admin-only — user manapun yang login boleh
+//                                    lapor aktivitasnya sendiri, dipanggil dari LoginPage.jsx
+//                                    dan tombol Logout di App.jsx)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -196,6 +201,52 @@ async function handleHistory(req, res, supabase) {
   });
 }
 
+async function handleActivity(req, res, supabase) {
+  if (req.method === "POST") {
+    // Bukan admin-only — user manapun yang sedang login boleh mencatat event
+    // login/logout MILIKNYA SENDIRI (user.id dari token, tidak bisa dipalsukan
+    // jadi user lain karena diambil dari getRequestUser, bukan dari body).
+    const user = await getRequestUser(req, supabase);
+    if (!user) {
+      res.status(401).json({ error: "Belum login." });
+      return;
+    }
+    const event = req.body?.event;
+    if (event !== "login" && event !== "logout") {
+      res.status(400).json({ error: "Field 'event' wajib 'login' atau 'logout'." });
+      return;
+    }
+    const { error } = await supabase
+      .from("auth_activity_log")
+      .insert({ user_id: user.id, email: user.email, event });
+    if (error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    res.status(200).json({ logged: true });
+    return;
+  }
+
+  if (req.method === "GET") {
+    const admin = await requireAdmin(req, res, supabase);
+    if (!admin) return;
+
+    const { data, error } = await supabase
+      .from("auth_activity_log")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    res.status(200).json({ activity: data || [] });
+    return;
+  }
+
+  res.status(405).json({ error: "Method tidak didukung untuk resource 'activity'." });
+}
+
 async function handleSecrets(req, res, supabase) {
   const admin = await requireAdmin(req, res, supabase);
   if (!admin) return;
@@ -238,7 +289,10 @@ export default async function handler(req, res) {
     case "secrets":
       await handleSecrets(req, res, supabase);
       return;
+    case "activity":
+      await handleActivity(req, res, supabase);
+      return;
     default:
-      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets." });
+      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity." });
   }
 }

@@ -123,6 +123,58 @@ function UsersSection() {
   );
 }
 
+const EVENT_LABEL = {
+  login: { text: "Login", cls: "cross-hit" },
+  logout: { text: "Logout", cls: "cross-miss" },
+};
+
+function ActivitySection() {
+  const [activity, setActivity] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await authFetch("/api/admin?resource=activity");
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+        setActivity(json.activity || []);
+      } catch (e) {
+        setError(e.message);
+      }
+    })();
+  }, []);
+
+  return (
+    <div className="card">
+      <h2>🕓 Aktivitas Login/Logout</h2>
+      <p className="sub">200 kejadian terakhir — siapa login/logout, kapan.</p>
+      {error && <div className="error-box">{error}</div>}
+      {activity === null && !error && <div className="state-box">Memuat aktivitas...</div>}
+      {activity && activity.length === 0 && <div className="state-box">Belum ada aktivitas tercatat.</div>}
+      {activity && activity.length > 0 && (
+        <div>
+          {activity.map((a) => {
+            const label = EVENT_LABEL[a.event] || { text: a.event, cls: "sub" };
+            return (
+              <div className="history-item" key={a.id}>
+                <div className="history-time">
+                  {new Date(a.created_at).toLocaleDateString("id-ID")}{" "}
+                  {new Date(a.created_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+                <div className="history-msg">
+                  <span style={{ fontWeight: 700 }}>{a.email}</span>{" "}
+                  <span className={label.cls} style={{ marginTop: 0 }}>{label.text}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsSection() {
   const [settings, setSettings] = useState(null);
   const [error, setError] = useState("");
@@ -302,6 +354,7 @@ export default function AdminTab() {
   return (
     <>
       <UsersSection />
+      <ActivitySection />
       <SettingsSection />
       <SecretsSection />
       <HistorySection />

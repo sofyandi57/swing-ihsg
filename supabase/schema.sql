@@ -177,5 +177,22 @@ create table if not exists app_settings (
   updated_at timestamptz not null default now()
 );
 
+-- auth_activity_log — LOG login/logout tiap user, untuk ditampilkan di Admin
+-- panel ("Aktivitas Login/Logout"). Supabase Auth sendiri cuma menyimpan
+-- last_sign_in_at (satu titik waktu, ke-overwrite tiap login baru) - tidak ada
+-- histori logout sama sekali dari bawaan Supabase, jadi dicatat manual di sini
+-- setiap kali event login/logout terjadi di sisi klien (lihat LoginPage.jsx dan
+-- tombol Logout di App.jsx).
+create table if not exists auth_activity_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid,
+  email text not null,
+  event text not null, -- 'login' | 'logout'
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_auth_activity_log_created_at on auth_activity_log(created_at desc);
+
 alter table app_admins enable row level security;
 alter table app_settings enable row level security;
+alter table auth_activity_log enable row level security;
