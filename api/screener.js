@@ -389,6 +389,16 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     res.status(200).json({
       mode,
+      // Echo kriteria yang BENAR-BENAR dipakai server — supaya kalau ada
+      // kejanggalan (misal totalScanned kelihatan seperti scan global padahal
+      // User pilih mode sektor), langsung ketahuan dari respons ini apa yang
+      // sebenarnya diproses, bukan tebak-tebakan dari UI semata.
+      criteria: {
+        sector: req.query?.sector || null,
+        subsector: req.query?.subsector || null,
+        minValue: req.query?.minValue || null,
+        minRatio: req.query?.minRatio || null,
+      },
       data: matched,
       totalScanned,
       scannedAt: startedAt,

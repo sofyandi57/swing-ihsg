@@ -391,7 +391,15 @@ export default function ScanTab() {
       {meta && status !== "loading" && (
         <div className="meta-text">
           Terakhir dipindai: {new Date(meta.scannedAt).toLocaleTimeString("id-ID")} ·{" "}
-          {meta.totalScanned} saham dicek · {results.length} cocok kriteria ·{" "}
+          Mode: <b>{meta.mode}</b>
+          {meta.criteria?.sector && (
+            <>
+              {" "}
+              · Sektor: <b>{meta.criteria.sector}</b>
+              {meta.criteria.subsector && <> / {meta.criteria.subsector}</>}
+            </>
+          )}{" "}
+          · {meta.totalScanned} saham dicek · {results.length} cocok kriteria ·{" "}
           {(meta.durationMs / 1000).toFixed(1)}s ·{" "}
           {meta.saved ? "✓ tersimpan ke histori" : `⚠ tidak tersimpan (${meta.saveError || "?"})`}
         </div>
