@@ -1,9 +1,13 @@
 {
   "version": 2,
   "public": false,
+  "outputDirectory": "dist",
   "functions": {
     "api/screener.js": {
       "maxDuration": 120
+    },
+    "api/scan-insight.js": {
+      "maxDuration": 30
     }
   }
 }
