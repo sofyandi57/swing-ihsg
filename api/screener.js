@@ -39,6 +39,11 @@ let MIN_PRICE = 50;
 let TOP_N = 25;
 let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 
+// Hardcode, BUKAN lewat app_settings — sengaja tidak bisa diubah dari Admin
+// panel supaya konsisten jadi lantai minimum di semua mode. Lihat pemakaian
+// di runScan() untuk alasan lengkapnya.
+const MIN_VALUE_HARDCODE = 1_000_000_000;
+
 async function loadSettingsOverrides() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return; // Admin panel belum dipakai — pakai default
 
@@ -266,6 +271,15 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     // global — tanpa kriteria tambahan
     matched = [...allWithRatio].sort((a, b) => b.volumeRatio - a.volumeRatio);
   }
+
+  // Batas keras (hardcode, berlaku di SEMUA mode termasuk "value" — sebagai
+  // lantai minimum, bukan pengganti threshold yang User isi sendiri): saham
+  // dengan nilai transaksi hari ini < 1 miliar dibuang. Dua alasan: (1) value
+  // kecil = kemungkinan besar bukan pergerakan "big money", cuma noise beberapa
+  // lot; (2) hasil scan tetap ringkas untuk diproses AI Insight/Bantuan AI
+  // (dibatasi MAX_ROWS di api/ai-shortlist.js) — value kecil sering mendominasi
+  // jumlah baris tanpa relevansi.
+  matched = matched.filter((r) => r.value >= MIN_VALUE_HARDCODE);
 
   return { all: allWithRatio, matched, totalScanned: codes.length };
 }
