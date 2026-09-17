@@ -31,8 +31,18 @@ create table if not exists scan_results (
   price numeric not null,
   prev_price numeric not null,
   price_change_pct numeric not null,
-  passed_filter boolean not null
+  passed_filter boolean not null,
+  sector text,
+  subsector text,
+  value numeric
 );
+
+-- Kolom sector/subsector/value ditambahkan belakangan (fitur filter screener) —
+-- alter terpisah supaya aman dijalankan ulang di project yang tabelnya sudah ada
+-- sebelum kolom ini ditambahkan.
+alter table scan_results add column if not exists sector text;
+alter table scan_results add column if not exists subsector text;
+alter table scan_results add column if not exists value numeric;
 
 -- Index untuk query histori yang umum: "tampilkan semua run terbaru",
 -- "tampilkan semua hasil untuk saham X dari waktu ke waktu"

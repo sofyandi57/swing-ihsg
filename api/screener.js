@@ -45,6 +45,19 @@ function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
 
+// Subsector TIDAK ada di /analysis/list/stock (cuma sector) — perlu panggilan
+// terpisah ke /analysis/information/{code}. Terlalu mahal dipanggil untuk ~900
+// saham per scan, jadi hanya dipanggil untuk saham yang LOLOS FILTER (~25),
+// dengan concurrency terbatas seperti scan utama.
+async function getSubsector(code) {
+  try {
+    const info = await invezgoGet(`/analysis/information/${code}`);
+    return info?.subsector || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function getLastTwoDays(code) {
   const to = new Date();
   const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000); // buffer 10 hari
@@ -56,7 +69,20 @@ async function getLastTwoDays(code) {
       to: ymd(to),
     });
   } catch (e) {
-    return null; // kode tidak valid / data kosong / error sementara — skip, jangan gagalkan seluruh scan
+    // Retry sekali kalau kena rate limit — tanpa ini, begitu 429 muncul di
+    // tengah scan, SEMUA batch sesudahnya ikut gagal terus-menerus dan hasil
+    // scan jadi bias ke saham yang kebetulan diproses lebih dulu (biasanya
+    // urutan alfabetis dari Invezgo — makanya sering "cuma keluar huruf A").
+    if (String(e.message || e).startsWith("429")) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        chart = await invezgoGet(`/analysis/chart/stock/${code}`, { from: ymd(from), to: ymd(to) });
+      } catch (e2) {
+        return null;
+      }
+    } else {
+      return null; // kode tidak valid / data kosong / error sementara — skip, jangan gagalkan seluruh scan
+    }
   }
 
   if (!Array.isArray(chart) || chart.length < 2) return null;
@@ -78,6 +104,7 @@ async function getLastTwoDays(code) {
 async function runFullScan() {
   const stockList = await invezgoGet("/analysis/list/stock");
   const codes = stockList.map((s) => s.code);
+  const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
 
   const rawResults = [];
   for (let i = 0; i < codes.length; i += CONCURRENCY) {
@@ -86,7 +113,9 @@ async function runFullScan() {
     rawResults.push(...batchResults.filter(Boolean));
   }
 
-  // Hitung rasio & tandai lolos filter atau tidak — INI SEMUA SAHAM, belum di-slice
+  // Hitung rasio & tandai lolos filter atau tidak — INI SEMUA SAHAM, belum di-slice.
+  // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
+  // nilai transaksi hari ini (price x volume), dipakai untuk filter "value" di UI.
   const allWithRatio = rawResults.map((r) => {
     const volumeRatio = r.volume / r.prevVolume;
     const priceChangePct = ((r.price - r.prevPrice) / r.prevPrice) * 100;
@@ -94,13 +123,26 @@ async function runFullScan() {
       volumeRatio >= MIN_VOLUME_RATIO &&
       r.prevVolume >= MIN_PREV_VOLUME &&
       r.price >= MIN_PRICE;
-    return { ...r, volumeRatio, priceChangePct, passedFilter };
+    return {
+      ...r,
+      volumeRatio,
+      priceChangePct,
+      passedFilter,
+      sector: sectorByCode.get(r.code) || null,
+      value: r.price * r.volume,
+    };
   });
 
   const filtered = allWithRatio
     .filter((r) => r.passedFilter)
     .sort((a, b) => b.volumeRatio - a.volumeRatio)
     .slice(0, TOP_N);
+
+  // Subsector hanya untuk saham yang lolos filter (~25) — lihat catatan di getSubsector.
+  const subsectorBatch = await Promise.all(filtered.map((r) => getSubsector(r.code)));
+  filtered.forEach((r, i) => {
+    r.subsector = subsectorBatch[i];
+  });
 
   return { all: allWithRatio, filtered, totalScanned: codes.length };
 }
@@ -145,6 +187,9 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
     prev_price: r.prevPrice,
     price_change_pct: r.priceChangePct,
     passed_filter: r.passedFilter,
+    sector: r.sector,
+    subsector: r.subsector || null, // hanya terisi untuk baris yang lolos filter
+    value: r.value,
   }));
 
   const INSERT_BATCH_SIZE = 200;
