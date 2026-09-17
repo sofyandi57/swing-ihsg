@@ -51,13 +51,20 @@ async function getStockListCached() {
   return _stockListCache;
 }
 
-// Deteksi kode saham yang disebut di pesan — regex TANPA text.toUpperCase() dulu
-// (sama seperti fix di mentor-call.js/pdf-watchlist.js): kalau di-uppercase dulu,
-// kata Title-Case biasa ("Jawa", "Naik") ikut ter-uppercase dan bisa salah kena
-// tangkap kalau kebetulan cocok kode ticker resmi. Kode saham asli selalu sudah
-// FULL CAPS di teks aslinya, jadi mempertahankan case adalah sinyal pembeda.
+// BEDA dengan mentor-call.js/pdf-watchlist.js: di sana teks SUMBER ditulis
+// mentor/dokumen resmi yang konsisten full caps untuk kode saham, jadi
+// mempertahankan case adalah sinyal anti-ambigu yang penting (menghindari
+// "Jawa"/"Naik" Title-Case ikut ter-uppercase dan salah tangkap). Di chatbot
+// ini teksnya PERTANYAAN USER YANG DIKETIK BEBAS — wajar ditulis huruf kecil
+// ("saham dpum gimana?"), jadi kalau regex mensyaratkan huruf besar dari teks
+// asli, chatbot GAGAL TOTAL mengenali kode yang ditanyakan (persis laporan
+// "AI ga bisa baca" - bukan soal mentor, tapi soal chatbot tidak mendeteksi
+// kode yang diketik lowercase). Uppercase teks dulu di sini, false-positive
+// kata umum tetap dicegah oleh validasi ke daftar saham resmi di bawah -
+// risiko rendah untuk konteks tanya-jawab satu kode (beda dengan ekstraksi
+// dari narasi panjang mentor yang rawan banyak kata umum 4-huruf).
 async function extractMentionedCodes(text) {
-  const candidates = [...new Set((text.match(/\b[A-Z]{4}\b/g) || []))];
+  const candidates = [...new Set((text.toUpperCase().match(/\b[A-Z]{4,6}\b/g) || []))];
   if (candidates.length === 0) return [];
   try {
     const stockList = await getStockListCached();
