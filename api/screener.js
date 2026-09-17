@@ -37,7 +37,7 @@ let MIN_VOLUME_RATIO = 3.0;
 let MIN_PREV_VOLUME = 1_000_000;
 let MIN_PRICE = 50;
 let TOP_N = 25;
-let CONCURRENCY = 20; // jumlah slot paralel yang SELALU terisi (lihat runPool)
+let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 
 async function loadSettingsOverrides() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return; // Admin panel belum dipakai — pakai default
@@ -120,14 +120,15 @@ function average(nums) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-// Ambil ~40 hari kalender (bukan cuma 10) supaya cukup dapat >=23 hari
-// PERDAGANGAN — dibutuhkan untuk kriteria "akumulasi diam-diam": rata-rata
-// volume 3 hari terakhir vs rata-rata volume 20 hari SEBELUM itu, plus
-// perubahan harga 3 hari terakhir. Satu kali fetch per saham tetap dipakai
-// untuk semua metrik (2-hari DAN 3-vs-20-hari) — tidak menambah panggilan API.
-async function getDailyMetrics(code) {
+// lookbackDays: 10 hari cukup untuk metrik 2-hari (dipakai mode global/sektor/
+// value). HANYA mode "volume_spike" butuh ~40 hari kalender (>=23 hari
+// PERDAGANGAN) untuk rata-rata volume 3-vs-20-hari — meminta 40 hari untuk
+// SEMUA mode (versi sebelumnya) membuat payload per saham 4x lebih besar dan
+// scan jadi jauh lebih lambat (bahkan untuk mode yang tidak butuh data itu
+// sama sekali) — ini penyebab scan terasa sangat lambat di semua mode.
+async function getDailyMetrics(code, lookbackDays = 10) {
   const to = new Date();
-  const from = new Date(to.getTime() - 40 * 24 * 60 * 60 * 1000);
+  const from = new Date(to.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
 
   let chart;
   try {
@@ -214,7 +215,8 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
   }
 
-  const pooledResults = await runPool(codes, CONCURRENCY, getDailyMetrics);
+  const lookbackDays = mode === "volume_spike" ? 40 : 10;
+  const pooledResults = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code, lookbackDays));
   const rawResults = pooledResults.filter(Boolean);
 
   // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
