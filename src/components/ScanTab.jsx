@@ -27,6 +27,11 @@ const SORT_FIELDS_BY_MODE = {
     { id: "volRatio3v20", label: "Rasio Volume 3v20" },
     { id: "priceChange3d", label: "Change 3 Hari %" },
   ],
+  special_if2x: [
+    { id: "volumeVsMA20", label: "Volume vs MA20" },
+    { id: "value", label: "Value" },
+    { id: "freq", label: "Frekuensi" },
+  ],
 };
 
 function formatNumber(n) {
@@ -48,7 +53,11 @@ function ResultCard({ row, mode, aiPick }) {
           {row.code} {aiPick && <span title={aiPick.reason}>🌟</span>}
         </span>
         <span className="ratio-pill">
-          {mode === "volume_spike" ? `${row.volRatio3v20.toFixed(2)}x (20h)` : `${row.volumeRatio.toFixed(2)}x`}
+          {mode === "volume_spike"
+            ? `${row.volRatio3v20.toFixed(2)}x (20h)`
+            : mode === "special_if2x"
+            ? `${row.volumeVsMA20.toFixed(2)}x (MA20)`
+            : `${row.volumeRatio.toFixed(2)}x`}
         </span>
       </div>
       {aiPick && <div className="cross-hit" style={{ marginTop: 0, marginBottom: 8 }}>🤖 {aiPick.reason}</div>}
@@ -95,6 +104,18 @@ function ResultCard({ row, mode, aiPick }) {
             </div>
           </>
         )}
+        {mode === "special_if2x" && (
+          <>
+            <div className="result-metric">
+              <span className="result-metric-label">Avg Vol 20d</span>
+              <span className="result-metric-value">{formatCompact(row.avgVolume20d)}</span>
+            </div>
+            <div className="result-metric">
+              <span className="result-metric-label">Frekuensi</span>
+              <span className="result-metric-value">{formatNumber(row.freq)}</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -114,6 +135,10 @@ export default function ScanTab() {
   // Konfigurasi mode "value" & "volume_spike"
   const [minValue, setMinValue] = useState("100000000");
   const [minRatio, setMinRatio] = useState("1.5");
+  // Centang di bawah kriteria "value" — beralih ke preset khusus "IF2X" (di-decode
+  // dari screenshot screener eksternal User): threshold sudah tetap (bukan minValue
+  // input manual), lihat komentar lengkap di api/screener.js runScan().
+  const [useSpecialIf2x, setUseSpecialIf2x] = useState(false);
 
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [results, setResults] = useState([]);
@@ -168,8 +193,14 @@ export default function ScanTab() {
     setStatus("idle");
     setResults([]);
     setMeta(null);
+    setUseSpecialIf2x(false);
     setSortField(SORT_FIELDS_BY_MODE[id][0].id);
     setSortDir("desc");
+  }
+
+  function toggleSpecialIf2x(checked) {
+    setUseSpecialIf2x(checked);
+    setSortField(SORT_FIELDS_BY_MODE[checked ? "special_if2x" : "value"][0].id);
   }
 
   async function fetchInsight(scanPayload) {
@@ -229,11 +260,12 @@ export default function ScanTab() {
     setAiStatus("idle");
     setAiPicks([]);
 
-    const params = new URLSearchParams({ mode: criteriaMode });
+    const effectiveMode = criteriaMode === "value" && useSpecialIf2x ? "special_if2x" : criteriaMode;
+    const params = new URLSearchParams({ mode: effectiveMode });
     if (criteriaMode === "sektor") {
       params.set("sector", selectedSector);
       if (selectedSubsector) params.set("subsector", selectedSubsector);
-    } else if (criteriaMode === "value") {
+    } else if (criteriaMode === "value" && !useSpecialIf2x) {
       params.set("minValue", minValue || "0");
     } else if (criteriaMode === "volume_spike") {
       params.set("minRatio", minRatio || "1");
@@ -271,7 +303,7 @@ export default function ScanTab() {
   const canRun =
     criteriaMode === "global" ||
     (criteriaMode === "sektor" && selectedSector) ||
-    (criteriaMode === "value" && minValue) ||
+    (criteriaMode === "value" && (useSpecialIf2x || minValue)) ||
     (criteriaMode === "volume_spike" && minRatio);
 
   return (
@@ -355,15 +387,44 @@ export default function ScanTab() {
 
           {criteriaMode === "value" && (
             <div style={{ marginBottom: 10 }}>
-              <div className="result-metric-label" style={{ marginBottom: 6 }}>NILAI TRANSAKSI MINIMUM HARI INI (RP)</div>
-              <input
-                className="input"
-                style={{ minHeight: 44 }}
-                type="number"
-                placeholder="Contoh: 100000000 (100 juta)"
-                value={minValue}
-                onChange={(e) => setMinValue(e.target.value)}
-              />
+              {!useSpecialIf2x && (
+                <>
+                  <div className="result-metric-label" style={{ marginBottom: 6 }}>NILAI TRANSAKSI MINIMUM HARI INI (RP)</div>
+                  <input
+                    className="input"
+                    style={{ minHeight: 44 }}
+                    type="number"
+                    placeholder="Contoh: 100000000 (100 juta)"
+                    value={minValue}
+                    onChange={(e) => setMinValue(e.target.value)}
+                  />
+                </>
+              )}
+
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  marginTop: useSpecialIf2x ? 0 : 12,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={useSpecialIf2x}
+                  onChange={(e) => toggleSpecialIf2x(e.target.checked)}
+                />
+                🎯 Pakai Special Screener (preset IF2X)
+              </label>
+              {useSpecialIf2x && (
+                <p className="sub" style={{ marginTop: 6, marginBottom: 0 }}>
+                  Preset tetap (bukan diisi manual): return harga 1 hari ≥ -10%, volume hari ini
+                  ≥ 2x rata-rata volume 20 hari, frekuensi transaksi &gt; 1, volume ≥ 5 juta lembar,
+                  value &gt; Rp 3 M. Butuh minimal 23 hari data perdagangan per saham.
+                </p>
+              )}
             </div>
           )}
 
@@ -503,7 +564,7 @@ export default function ScanTab() {
 
           <div className="result-list">
             {sortedResults.map((row) => (
-              <ResultCard key={row.code} row={row} mode={criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
+              <ResultCard key={row.code} row={row} mode={meta?.mode || criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
             ))}
           </div>
         </>

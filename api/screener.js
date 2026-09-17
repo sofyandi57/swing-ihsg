@@ -210,6 +210,22 @@ async function getSubsector(code) {
   }
 }
 
+// Frekuensi transaksi (jumlah kali transaksi terjadi hari ini) HANYA tersedia
+// di endpoint intraday-data, TIDAK ada di /analysis/chart/stock/ yang dipakai
+// getDailyMetrics — jadi mode "special_if2x" (butuh syarat Frequency > 1) perlu
+// panggilan Invezgo TAMBAHAN. Untuk menjaga biaya API tetap rendah (pelajaran
+// dari sesi sebelumnya), ini HANYA dipanggil untuk saham yang SUDAH lolos
+// semua filter murah lainnya (harga, volume, value) — bukan untuk semua ~900
+// saham di universe.
+async function getFrequency(code) {
+  try {
+    const d = await invezgoGet(`/analysis/intraday-data/${code}`);
+    return Number(d?.freq) || 0;
+  } catch (e) {
+    return null;
+  }
+}
+
 function average(nums) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
@@ -304,6 +320,14 @@ async function getDailyMetrics(code, lookbackDays = 10) {
 //   volume_spike — rata-rata volume 3 hari terakhir >= minRatio x rata-rata
 //                  volume 20 hari sebelumnya (butuh >=23 hari data — lihat
 //                  getDailyMetrics)
+//   special_if2x — preset "IF2X" (di-decode dari screenshot screener eksternal
+//                  User, OCR): 1-day price return >= -10%, volume hari ini >=
+//                  2x rata-rata volume 20 hari (BUKAN 3-hari seperti
+//                  volume_spike — ini murni "hari ini vs MA20"), frequency
+//                  transaksi > 1, volume >= 5 juta lembar, value > Rp 3 M,
+//                  previous volume > 0. Threshold tetap (bukan input User),
+//                  sesuai preset aslinya — makanya tidak butuh param minValue/
+//                  minRatio dari UI, beda dengan mode "value"/"volume_spike".
 async function runScan({ mode, sector, subsector, minValue, minRatio }) {
   const stockList = await getStockListCached();
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
@@ -313,7 +337,7 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
   }
 
-  const lookbackDays = mode === "volume_spike" ? 40 : 10;
+  const lookbackDays = mode === "volume_spike" || mode === "special_if2x" ? 40 : 10;
   const pooledResults = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code, lookbackDays));
   const rawResults = pooledResults.filter(Boolean);
 
@@ -334,10 +358,21 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     // Sherly (langkah 5-6): tetap tampilkan, tapi kasih tahu risikonya supaya
     // User yang putuskan, bukan otomatis dibuang.
     const sudahNaikTajam = priceChangePct >= 20;
+    // volumeVsMA20 — volume HARI INI dibagi rata-rata volume 20 hari (bukan
+    // rata-rata 3 hari seperti volRatio3v20/"volume_spike"). Ini definisi
+    // "volume breakout" yang dipakai preset IF2X: satu hari lonjakan volume
+    // relatif terhadap baseline sebulan terakhir, bukan tren 3 hari.
+    const volumeVsMA20 = r.avgVolume20d ? r.volume / r.avgVolume20d : null;
+    // volumeChangePct — dipakai preset IF2X sebagai floor "> -100%" (volume
+    // tidak anjlok sampai nol). Selalu true kecuali volume hari ini benar-benar
+    // 0, jadi dampaknya kecil, tapi tetap diterapkan persis sesuai preset asli.
+    const volumeChangePct = ((r.volume - r.prevVolume) / r.prevVolume) * 100;
     return {
       ...r,
       volumeRatio,
       priceChangePct,
+      volumeVsMA20,
+      volumeChangePct,
       quietAccumulation,
       sudahNaikTajam,
       sector: sectorByCode.get(r.code) || null,
@@ -364,6 +399,23 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     matched = allWithRatio
       .filter((r) => r.volRatio3v20 !== null && r.volRatio3v20 >= threshold)
       .sort((a, b) => b.volRatio3v20 - a.volRatio3v20);
+  } else if (mode === "special_if2x") {
+    // Rule 1-3, 5-6, 8 dari preset IF2X (lihat komentar di atas fungsi ini).
+    // Rule "Frequency > 1" (rule 4 & 7 di screenshot, sama-sama syarat freq —
+    // dianggap satu syarat freq > 1) BELUM diterapkan di sini karena freq
+    // butuh panggilan Invezgo terpisah (lihat getFrequency) — diterapkan
+    // SESUDAH ini, hanya untuk saham yang sudah lolos semua filter murah di
+    // bawah, supaya tidak menambah ratusan hit API percuma ke universe penuh.
+    matched = allWithRatio
+      .filter((r) =>
+        r.priceChangePct >= -10 &&
+        r.volumeChangePct > -100 &&
+        r.volumeVsMA20 !== null && r.volumeVsMA20 >= 2 &&
+        r.volume >= 5_000_000 &&
+        r.value > 3_000_000_000 &&
+        r.prevVolume > 0
+      )
+      .sort((a, b) => b.volumeVsMA20 - a.volumeVsMA20);
   } else if (mode === "sektor") {
     matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio)
       .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
@@ -378,6 +430,17 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     matched = allWithRatio
       .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
       .sort((a, b) => b.volumeRatio - a.volumeRatio);
+  }
+
+  // Lengkapi rule "Frequency > 1" preset IF2X — HANYA untuk shortlist yang
+  // sudah lolos filter murah di atas (biasanya puluhan saham, bukan ~900),
+  // sama prinsipnya dengan getSubsector() di mode "sektor".
+  if (mode === "special_if2x" && matched.length > 0) {
+    const freqBatch = await Promise.all(matched.map((r) => getFrequency(r.code)));
+    matched.forEach((r, i) => {
+      r.freq = freqBatch[i];
+    });
+    matched = matched.filter((r) => r.freq !== null && r.freq > 1);
   }
 
   // Batas keras (hardcode, berlaku di SEMUA mode termasuk "value" — sebagai
@@ -483,7 +546,7 @@ export default async function handler(req, res) {
   await loadSettingsOverrides();
 
   const mode = req.query?.mode || "global";
-  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike"]);
+  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x"]);
   if (!VALID_MODES.has(mode)) {
     res.status(400).json({ error: `mode '${mode}' tidak valid. Pilihan: ${[...VALID_MODES].join(", ")}.` });
     return;
@@ -509,7 +572,11 @@ export default async function handler(req, res) {
     // CACHE_TTL_MENIT terakhir (misal teman lain baru scan barusan), pakai
     // hasil itu, JANGAN panggil Invezgo lagi. Ini yang mencegah beberapa user
     // bersamaan "bentrok" kena rate-limit Invezgo secara bersamaan.
-    const supabaseForCache = getSupabaseAdmin();
+    // special_if2x TIDAK pakai cache — field "freq"-nya tidak ikut disimpan ke
+    // scan_results (lihat saveToSupabase), jadi cache-hit akan kehilangan freq.
+    // Ini mode "special/manual" yang dijalankan sesekali, bukan scan rutin
+    // banyak user, jadi selalu fresh tidak masalah dari sisi biaya API.
+    const supabaseForCache = mode === "special_if2x" ? null : getSupabaseAdmin();
     if (supabaseForCache) {
       const cached = await findCachedRun(supabaseForCache, criteria);
       if (cached) {
