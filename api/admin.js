@@ -504,13 +504,22 @@ async function handleQuotaFlush(req, res, supabase) {
 
     // 2b. Snapshot live (freq/value/volume + bid/offer level 1) ditarik LEBIH
     //     DULU secara batch (10 kode/request), bukan satu-satu di dalam loop
-    //     per-kode di bawah — jauh lebih hemat kuota. Kalau budget habis
-    //     di tengah, chunk yang belum sempat berarti kode-kode itu baris
-    //     CSV-nya kosong di kolom live/bid/offer saja (bukan digagalkan
-    //     total), sama seperti perilaku partial lainnya di endpoint ini.
+    //     per-kode di bawah — jauh lebih hemat kuota.
+    //
+    //     BUG YANG DIPERBAIKI (ditemukan lewat log Vercel — lihat
+    //     VERCEL_CRON_DIAGNOSIS.md): versi sebelumnya prefetch batch ini untuk
+    //     SELURUH `orderedCodes` (~900 saham, ~90 chunk x 2 endpoint), yang
+    //     sendirian sudah bisa menghabiskan seluruh budget 280 detik SEBELUM
+    //     loop per-kode di bawah (yang mengisi `rows[]`) sempat mulai sama
+    //     sekali — makanya tabel quota_flush_data SELALU kosong walau function
+    //     "sukses" jalan penuh. Sekarang prefetch batch DIBATASI ke
+    //     `recommendedCodes` saja (jauh lebih sedikit, biasanya puluhan) —
+    //     sisanya (restCodes) tidak diprefetch, kolom live/bid/offer-nya
+    //     akan kosong di baris tabel jika loop sempat menjangkau kode itu,
+    //     itu partial yang bisa diterima, LEBIH BAIK daripada kosong total.
     const liveByCode = new Map();
     const bookByCode = new Map();
-    for (const group of chunkArray(orderedCodes, BATCH_SIZE)) {
+    for (const group of chunkArray(recommendedCodes, BATCH_SIZE)) {
       if (!budgetLeft()) break;
       try {
         const results = await paced(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
@@ -519,7 +528,7 @@ async function handleQuotaFlush(req, res, supabase) {
         // skip chunk ini, lanjut chunk berikutnya
       }
     }
-    for (const group of chunkArray(orderedCodes, BATCH_SIZE)) {
+    for (const group of chunkArray(recommendedCodes, BATCH_SIZE)) {
       if (!budgetLeft()) break;
       try {
         const results = await paced(`/batch/order-book/${group.join("|")}`, { market: "RG" });
@@ -536,6 +545,7 @@ async function handleQuotaFlush(req, res, supabase) {
     //    sudah sempat diproses SEBELUM budget habis tetap masuk CSV
     //    (partial, bukan dibuang semua).
     const rows = [];
+    const unsavedRows = [];
     for (const code of orderedCodes) {
       if (!budgetLeft()) break;
 
@@ -606,12 +616,27 @@ async function handleQuotaFlush(req, res, supabase) {
       }
 
       rows.push(row);
+      unsavedRows.push(row);
+
+      // Simpan BERTAHAP tiap 20 kode, BUKAN cuma sekali di akhir loop —
+      // bug sebelumnya: kalau function di-kill platform (timeout hard-kill,
+      // bukan return biasa) di TENGAH loop, save-sekali-di-akhir ini tidak
+      // pernah sempat jalan sama sekali, jadi progress yang sudah didapat
+      // hilang total. Simpan tiap batch kecil supaya progress tetap ada
+      // di database walau function mati mendadak sebelum loop selesai.
+      if (unsavedRows.length >= 20) {
+        await saveFlushRows(supabase, unsavedRows);
+        unsavedRows.length = 0;
+      }
     }
 
-    // Simpan ke database SELALU — baik dipicu klik manual maupun cron
-    // otomatis. Ini yang membuat hasil cron (yang tidak ada browser menonton
-    // responsnya) tetap berguna, bukan hilang begitu saja.
-    await saveFlushRows(supabase, rows);
+    // Sisa baris yang belum sempat ke-flush oleh batch periodik di atas
+    // (kurang dari 20 baris terakhir) — dan sebagai jaring pengaman kalau
+    // dipicu manual klik lewat action lama yang mengharapkan save sekali di
+    // akhir juga tetap benar.
+    if (unsavedRows.length > 0) {
+      await saveFlushRows(supabase, unsavedRows);
+    }
 
     const columns = Object.keys(rows[0] || { code: "" });
     const csv = rowsToCsv(rows, columns);
