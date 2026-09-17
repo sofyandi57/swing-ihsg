@@ -29,6 +29,11 @@ export default function ChartTab() {
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
   const [lastCandle, setLastCandle] = useState(null);
+  const candlesRef = useRef([]);
+
+  const [taStatus, setTaStatus] = useState("idle"); // idle | loading | done | error
+  const [taResult, setTaResult] = useState(null);
+  const [taError, setTaError] = useState("");
 
   // Setup chart sekali saat mount
   useEffect(() => {
@@ -87,6 +92,10 @@ export default function ChartTab() {
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
       const candles = json.candles || [];
+      candlesRef.current = candles;
+      setTaResult(null);
+      setTaError("");
+
       if (candles.length === 0) {
         setStatus("done");
         setLastCandle(null);
@@ -130,6 +139,34 @@ export default function ChartTab() {
     const trimmed = inputValue.trim().toUpperCase();
     if (!trimmed) return;
     setCode(trimmed);
+  }
+
+  async function runTechnicalAnalysis() {
+    if (candlesRef.current.length < 20) {
+      setTaError("Data candle belum cukup (minimal 20) untuk analisa teknikal.");
+      setTaStatus("error");
+      return;
+    }
+
+    setTaStatus("loading");
+    setTaError("");
+    setTaResult(null);
+
+    try {
+      const resp = await fetch("/api/technical-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, timeframe, candles: candlesRef.current }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+      setTaResult(json);
+      setTaStatus("done");
+    } catch (e) {
+      setTaError(e.message);
+      setTaStatus("error");
+    }
   }
 
   return (
@@ -194,6 +231,68 @@ export default function ChartTab() {
           <div className="state-box">Tidak ada data candlestick untuk {code} pada timeframe ini.</div>
         )}
       </div>
+
+      {status === "done" && lastCandle && (
+        <div className="card">
+          <h2>🎯 Analisa Teknikal</h2>
+          <p className="sub">
+            Hitung SMA20/50, RSI14, dan support/resistance dari swing high/low —
+            lalu AI narasikan jadi area beli, area jual, dan stop-loss. Alat
+            bantu baca data, bukan rekomendasi transaksi.
+          </p>
+          <button className="btn btn-primary btn-block" onClick={runTechnicalAnalysis} disabled={taStatus === "loading"}>
+            {taStatus === "loading" ? "⏳ Menganalisa..." : "🎯 Analisa Teknikal Sekarang"}
+          </button>
+
+          {taError && <div className="error-box" style={{ marginTop: 12 }}>Gagal analisa: {taError}</div>}
+
+          {taResult && (
+            <div style={{ marginTop: 12 }}>
+              <div className="result-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 12 }}>
+                <div className="result-metric">
+                  <span className="result-metric-label">Tren</span>
+                  <span className="result-metric-value">
+                    {taResult.indicators.trend === "uptrend" ? "📈 Uptrend" : taResult.indicators.trend === "downtrend" ? "📉 Downtrend" : "➡️ Sideways"}
+                  </span>
+                </div>
+                <div className="result-metric">
+                  <span className="result-metric-label">RSI(14)</span>
+                  <span className="result-metric-value">{taResult.indicators.rsi14 ? taResult.indicators.rsi14.toFixed(1) : "—"}</span>
+                </div>
+                <div className="result-metric">
+                  <span className="result-metric-label">Support Terdekat</span>
+                  <span className="result-metric-value up">{taResult.indicators.nearestSupport ?? "—"}</span>
+                </div>
+                <div className="result-metric">
+                  <span className="result-metric-label">Resistance Terdekat</span>
+                  <span className="result-metric-value down">{taResult.indicators.nearestResistance ?? "—"}</span>
+                </div>
+                <div className="result-metric">
+                  <span className="result-metric-label">SMA20</span>
+                  <span className="result-metric-value">{taResult.indicators.sma20 ? taResult.indicators.sma20.toFixed(1) : "—"}</span>
+                </div>
+                <div className="result-metric">
+                  <span className="result-metric-label">SMA50</span>
+                  <span className="result-metric-value">{taResult.indicators.sma50 ? taResult.indicators.sma50.toFixed(1) : "—"}</span>
+                </div>
+              </div>
+
+              {taResult.narrative ? (
+                <div className="insight-box">
+                  <div className="insight-label">🤖 Kesimpulan Area Beli/Jual</div>
+                  {taResult.narrative}
+                </div>
+              ) : (
+                <div className="sub">
+                  ⚠ Narasi AI tidak tersedia (Groq nonaktif{taResult.groqSkipReason ? ": " + taResult.groqSkipReason : ""}).
+                  Baca angka support/resistance & tren di atas secara manual: area beli wajar
+                  dekat support, area jual/target dekat resistance, stop-loss sedikit di bawah support.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

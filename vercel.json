@@ -13,6 +13,9 @@
     },
     "api/stock-chart.js": {
       "maxDuration": 20
+    },
+    "api/technical-analysis.js": {
+      "maxDuration": 30
     }
   }
 }
