@@ -287,14 +287,62 @@ async function getFrequency(code) {
 // ada endpoint depth-5 yang tersedia. Daripada mengarang angka level 2-5,
 // tekanan order book di mode ini SENGAJA cuma pakai level 1 — didokumentasikan
 // eksplisit di UI juga, bukan disembunyikan sebagai "level 5" palsu.
-async function getIntradaySnapshot(code) {
-  try {
-    const d = await invezgoGet(`/analysis/intraday-data/${code}`);
+// Batch endpoints (/batch/intraday-data, /batch/order-book) menerima banyak
+// kode sekaligus (dipisah "|") dalam SATU request — dokumentasi Invezgo sebut
+// maks 10 kode untuk Role MAX, 25 untuk Role ELITE/OWNER/ADMIN. Tier akun ini
+// belum diketahui, jadi pakai 10 (paling aman). Ini mengganti kebutuhan 1
+// request PER KODE kandidat (dulu lewat runPool concurrency 15 di atas
+// /analysis/intraday-data/{code}) jadi 1 request per 10 kode — penghematan
+// kuota besar untuk shortlist Momentum Sniper yang bisa puluhan kode.
+const BATCH_SIZE = 10;
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Snapshot live BANYAK kode sekaligus untuk mode "momentum_sniper" — freq,
+// value/volume hari ini, dan bid/offer LEVEL 1 SAJA (best bid/offer lot).
+// PENTING: spesifikasi "Momentum Sniper" yang diminta User menyebut
+// sum_bid_volume(5)/sum_offer_volume(5) (kedalaman order book 5 level) —
+// Invezgo (tier yang dipakai app ini) HANYA mengekspos level 1 lewat batch
+// endpoint (bid1lot/offer1lot), tidak ada endpoint depth-5 yang tersedia.
+// Daripada mengarang angka level 2-5, tekanan order book di mode ini SENGAJA
+// cuma pakai level 1 — didokumentasikan eksplisit di UI juga, bukan
+// disembunyikan sebagai "level 5" palsu.
+async function getIntradaySnapshotsBatch(codes) {
+  const dataByCode = new Map();
+  const bookByCode = new Map();
+
+  for (const group of chunkArray(codes, BATCH_SIZE)) {
+    try {
+      const results = await invezgoGet(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
+      if (Array.isArray(results)) for (const r of results) dataByCode.set(r.code, r);
+    } catch (e) {
+      // skip chunk ini, lanjut chunk berikutnya
+    }
+  }
+  for (const group of chunkArray(codes, BATCH_SIZE)) {
+    try {
+      const results = await invezgoGet(`/batch/order-book/${group.join("|")}`, { market: "RG" });
+      if (Array.isArray(results)) for (const r of results) bookByCode.set(r.code, r);
+    } catch (e) {
+      // skip chunk ini, lanjut chunk berikutnya
+    }
+  }
+
+  return codes.map((code) => {
+    const d = dataByCode.get(code);
+    const book = bookByCode.get(code);
+    const bid = book?.bid?.[0];
+    const offer = book?.offer?.[0];
+
     const freq = Number(d?.freq);
     const value = Number(d?.value);
     const volume = Number(d?.volume);
-    const bidLot = Number(d?.bid_lot);
-    const offerLot = Number(d?.offer_lot);
+    const bidLot = Number(bid?.bid1lot);
+    const offerLot = Number(offer?.offer1lot);
     if (!Number.isFinite(freq) || freq <= 0) return null;
     return {
       code,
@@ -306,9 +354,7 @@ async function getIntradaySnapshot(code) {
       bidOfferRatioL1: Number.isFinite(bidLot) && Number.isFinite(offerLot) && offerLot > 0 ? bidLot / offerLot : null,
       ticketSize: Number.isFinite(value) && freq > 0 ? value / freq : null,
     };
-  } catch (e) {
-    return null;
-  }
+  });
 }
 
 function average(nums) {
@@ -658,7 +704,7 @@ function computeHumanSpeedScore({ frequencyRatio, ticketRatio, volumeRatio, pric
 async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
   if (stage1Candidates.length === 0) return [];
 
-  const snapshots = await runPool(stage1Candidates, 15, (r) => getIntradaySnapshot(r.code));
+  const snapshots = await getIntradaySnapshotsBatch(stage1Candidates.map((r) => r.code));
   await saveFreqSnapshot(supabase, snapshots);
   const baselines = await getFreqBaselines(supabase, stage1Candidates.map((r) => r.code));
 
