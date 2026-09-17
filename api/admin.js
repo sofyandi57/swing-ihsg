@@ -21,11 +21,21 @@
 //                                    sendiri (bukan admin-only — user manapun yang login boleh
 //                                    lapor aktivitasnya sendiri, dipanggil dari LoginPage.jsx
 //                                    dan tombol Logout di App.jsx)
+// GET  ?resource=quota-flush[&maxRequests=N] — admin only. Tarik banyak dimensi data
+//                                    (chart harian, sektor/subsektor, snapshot live) untuk
+//                                    saham "paling direkomendasikan" (dari histori scan
+//                                    terbaru) + sisanya, dipacing SESUAI rate limit Invezgo
+//                                    (250/menit) supaya tidak 429 percuma, sampai budget waktu
+//                                    function/quota habis. Balikan CSV langsung (bukan JSON) —
+//                                    lihat catatan jujur soal kenapa TIDAK bisa "habiskan semua
+//                                    kuota sekaligus" di komentar handleQuotaFlush.
 
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const INVEZGO_BASE_URL = "https://api.invezgo.com";
+const INVEZGO_API_KEY = process.env.INVEZGO_API_KEY;
 
 function getAdminClient() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
@@ -247,6 +257,194 @@ async function handleActivity(req, res, supabase) {
   res.status(405).json({ error: "Method tidak didukung untuk resource 'activity'." });
 }
 
+function ymd(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+async function invezgoGet(path, params = {}) {
+  const url = new URL(INVEZGO_BASE_URL + path);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` } });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+function csvEscape(val) {
+  if (val === null || val === undefined) return "";
+  const s = String(val);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// Invezgo tier "Advance" User: 30.000 request/bulan, 250 request/menit, TANPA
+// batch endpoint (lihat spek Momentum Sniper sesi sebelumnya). "Habiskan
+// semua sisa kuota sekaligus" secara LITERAL TIDAK MUNGKIN dalam satu HTTP
+// request: 250/menit berarti ~3800 sisa kuota butuh MINIMAL ~15 menit
+// nonstop — jauh melebihi batas maxDuration serverless function manapun
+// (Vercel Hobby plan maksimal ~300 detik/5 menit). Mengirim lebih cepat dari
+// 250/menit JUGA TIDAK menambah kuota terpakai — cuma bikin sebagian besar
+// request gagal 429 (dihitung tetap terhadap kuota, TAPI hasilnya kosong -
+// jelas lebih buruk daripada dipacing benar). Jadi endpoint ini JUJUR:
+// jalankan pacing SEDIKIT DI BAWAH limit (230/menit, buffer aman) selama
+// budget waktu function (280 detik, di bawah cap 300 detik Vercel Hobby),
+// lalu kembalikan apa pun yang berhasil dikumpulkan sebagai CSV — Admin bisa
+// klik lagi beberapa kali dalam sisa 3 jam sebelum reset untuk melanjutkan.
+const RATE_LIMIT_PER_MIN = 230;
+const PACING_MS = Math.ceil(60000 / RATE_LIMIT_PER_MIN);
+const TIME_BUDGET_MS = 280_000;
+
+async function handleQuotaFlush(req, res, supabase) {
+  const admin = await requireAdmin(req, res, supabase);
+  if (!admin) return;
+
+  if (!INVEZGO_API_KEY) {
+    res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
+    return;
+  }
+
+  const requestedMax = Number(req.query?.maxRequests);
+  const startedAt = Date.now();
+  let requestsUsed = 0;
+
+  function budgetLeft() {
+    const timeLeft = Date.now() - startedAt < TIME_BUDGET_MS;
+    const countLeft = !Number.isFinite(requestedMax) || requestedMax <= 0 || requestsUsed < requestedMax;
+    return timeLeft && countLeft;
+  }
+
+  async function paced(path, params) {
+    requestsUsed += 1;
+    const result = await invezgoGet(path, params);
+    await new Promise((r) => setTimeout(r, PACING_MS));
+    return result;
+  }
+
+  try {
+    // 1. Daftar saham resmi (1 request) — juga sumber sector per kode (gratis,
+    //    sudah termasuk di respons ini, tidak perlu request terpisah).
+    const stockList = await paced("/analysis/list/stock");
+    const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
+
+    // 2. "Paling direkomendasikan" DULU — kode yang lolos filter di scan_run
+    //    TERBARU (mode apapun), diurutkan volume_ratio tertinggi. Sisanya
+    //    (universe penuh dikurangi yang sudah masuk daftar rekomendasi)
+    //    menyusul di belakang, urutan asli dari Invezgo.
+    let recommendedCodes = [];
+    try {
+      const { data: lastRun } = await supabase
+        .from("scan_runs")
+        .select("id")
+        .order("scanned_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastRun) {
+        const { data: passedRows } = await supabase
+          .from("scan_results")
+          .select("code")
+          .eq("run_id", lastRun.id)
+          .eq("passed_filter", true)
+          .order("volume_ratio", { ascending: false });
+        recommendedCodes = (passedRows || []).map((r) => r.code);
+      }
+    } catch (e) {
+      // Gagal ambil rekomendasi bukan alasan gagalkan flush — lanjut tanpa prioritas
+    }
+    const recommendedSet = new Set(recommendedCodes);
+    const restCodes = stockList.map((s) => s.code).filter((c) => !recommendedSet.has(c));
+    const orderedCodes = [...recommendedCodes, ...restCodes];
+
+    // 3. Untuk tiap kode (sesuai urutan prioritas), tarik 3 dimensi tambahan:
+    //    chart harian 10 hari (harga/volume), information (subsektor), dan
+    //    intraday-data (snapshot live: freq, bid/offer, value). Berhenti
+    //    begitu budget waktu/jumlah request habis — baris yang sudah sempat
+    //    diproses SEBELUM budget habis tetap masuk CSV (partial, bukan
+    //    dibuang semua).
+    const rows = [];
+    for (const code of orderedCodes) {
+      if (!budgetLeft()) break;
+
+      const row = {
+        code,
+        sector: sectorByCode.get(code) || "",
+        isRecommended: recommendedSet.has(code) ? "yes" : "no",
+        subsector: "",
+        price: "", prevPrice: "", priceChangePct: "", open: "", high: "", low: "",
+        volume: "", prevVolume: "", volumeRatio: "", value: "",
+        liveFreq: "", liveValue: "", liveVolume: "", bidPrice: "", offerPrice: "", bidLot: "", offerLot: "",
+      };
+
+      if (budgetLeft()) {
+        try {
+          const info = await paced(`/analysis/information/${code}`);
+          row.subsector = info?.subsector || "";
+        } catch (e) {
+          // skip dimensi ini untuk kode ini, lanjut ke dimensi berikutnya
+        }
+      }
+
+      if (budgetLeft()) {
+        try {
+          const to = new Date();
+          const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000);
+          const chart = await paced(`/analysis/chart/stock/${code}`, { from: ymd(from), to: ymd(to) });
+          if (Array.isArray(chart) && chart.length >= 2) {
+            const sorted = [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const today = sorted[sorted.length - 1];
+            const prev = sorted[sorted.length - 2];
+            const price = Number(today.close);
+            const prevPrice = Number(prev.close);
+            const volume = Number(today.volume);
+            const prevVolume = Number(prev.volume);
+            row.price = price;
+            row.prevPrice = prevPrice;
+            row.priceChangePct = prevPrice > 0 ? (((price - prevPrice) / prevPrice) * 100).toFixed(2) : "";
+            row.open = today.open;
+            row.high = today.high;
+            row.low = today.low;
+            row.volume = volume;
+            row.prevVolume = prevVolume;
+            row.volumeRatio = prevVolume > 0 ? (volume / prevVolume).toFixed(2) : "";
+            row.value = Number.isFinite(price) && Number.isFinite(volume) ? Math.round(price * volume) : "";
+          }
+        } catch (e) {
+          // skip
+        }
+      }
+
+      if (budgetLeft()) {
+        try {
+          const live = await paced(`/analysis/intraday-data/${code}`);
+          row.liveFreq = live?.freq ?? "";
+          row.liveValue = live?.value ?? "";
+          row.liveVolume = live?.volume ?? "";
+          row.bidPrice = live?.bid_price ?? "";
+          row.offerPrice = live?.offer_price ?? "";
+          row.bidLot = live?.bid_lot ?? "";
+          row.offerLot = live?.offer_lot ?? "";
+        } catch (e) {
+          // skip
+        }
+      }
+
+      rows.push(row);
+    }
+
+    const columns = Object.keys(rows[0] || { code: "" });
+    const header = columns.join(",");
+    const body = rows.map((r) => columns.map((c) => csvEscape(r[c])).join(",")).join("\n");
+    const csv = `${header}\n${body}\n`;
+
+    const filename = `invezgo-quota-flush-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("X-Requests-Used", String(requestsUsed));
+    res.setHeader("X-Codes-Processed", String(rows.length));
+    res.setHeader("X-Codes-Total", String(orderedCodes.length));
+    res.status(200).send(csv);
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e), requestsUsed });
+  }
+}
+
 async function handleSecrets(req, res, supabase) {
   const admin = await requireAdmin(req, res, supabase);
   if (!admin) return;
@@ -292,7 +490,10 @@ export default async function handler(req, res) {
     case "activity":
       await handleActivity(req, res, supabase);
       return;
+    case "quota-flush":
+      await handleQuotaFlush(req, res, supabase);
+      return;
     default:
-      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity." });
+      res.status(400).json({ error: "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush." });
   }
 }

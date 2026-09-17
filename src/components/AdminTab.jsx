@@ -350,11 +350,99 @@ function SecretsSection() {
   );
 }
 
+// "Flush Kuota API" — tarik banyak dimensi data (chart, sektor, snapshot
+// live) untuk saham yang paling direkomendasikan (dari histori scan
+// terbaru) + sisa universe, dipacing sesuai rate limit Invezgo (230/menit,
+// buffer aman di bawah limit resmi 250/menit), sampai budget waktu function
+// (~280 detik) atau jumlah request yang diminta habis. TIDAK BISA "habiskan
+// semua kuota sekaligus" dalam satu klik — rate limit + batas durasi
+// serverless function bikin itu mustahil (lihat komentar lengkap di
+// api/admin.js handleQuotaFlush) — klik beberapa kali kalau mau lanjutkan
+// dalam sisa waktu sebelum reset kuota bulanan.
+function QuotaFlushSection() {
+  const [status, setStatus] = useState("idle"); // idle | loading | error
+  const [error, setError] = useState("");
+  const [lastResult, setLastResult] = useState(null);
+  const [maxRequests, setMaxRequests] = useState("");
+
+  async function runFlush() {
+    setStatus("loading");
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (maxRequests) params.set("maxRequests", maxRequests);
+      const resp = await authFetch(`/api/admin?resource=quota-flush${params.toString() ? "&" + params.toString() : ""}`);
+      if (!resp.ok) {
+        const json = await resp.json().catch(() => ({}));
+        throw new Error(json.error || `HTTP ${resp.status}`);
+      }
+
+      const requestsUsed = resp.headers.get("X-Requests-Used");
+      const codesProcessed = resp.headers.get("X-Codes-Processed");
+      const codesTotal = resp.headers.get("X-Codes-Total");
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `invezgo-quota-flush-${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setLastResult({ requestsUsed, codesProcessed, codesTotal });
+      setStatus("idle");
+    } catch (e) {
+      setError(e.message);
+      setStatus("error");
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>🚀 Flush Kuota API (Admin)</h2>
+      <p className="sub">
+        Tarik banyak dimensi data (chart 10 hari, sektor/subsektor, snapshot live: freq/bid/offer)
+        untuk saham paling direkomendasikan (dari scan terbaru) + sisa universe, dipacing 230
+        request/menit (buffer aman di bawah limit resmi Invezgo 250/menit) selama ~4-5 menit per
+        klik. Hasilnya langsung terdownload sebagai CSV. Klik beberapa kali untuk lanjutkan kalau
+        belum habis — rate limit + batas durasi function bikin "sekali klik habis semua kuota"
+        mustahil secara teknis.
+      </p>
+      <div style={{ marginBottom: 10 }}>
+        <div className="result-metric-label" style={{ marginBottom: 6 }}>
+          BATAS JUMLAH REQUEST (OPSIONAL — KOSONGKAN UNTUK PAKAI BUDGET WAKTU PENUH)
+        </div>
+        <input
+          className="input"
+          style={{ minHeight: 40 }}
+          type="number"
+          placeholder="Contoh: 1000"
+          value={maxRequests}
+          onChange={(e) => setMaxRequests(e.target.value)}
+        />
+      </div>
+      {error && <div className="error-box">Gagal flush: {error}</div>}
+      {lastResult && (
+        <div className="cross-hit" style={{ marginBottom: 10 }}>
+          ✓ Terakhir: {lastResult.requestsUsed} request terpakai, {lastResult.codesProcessed} dari{" "}
+          {lastResult.codesTotal} kode diproses.
+        </div>
+      )}
+      <button className="btn btn-primary btn-block" onClick={runFlush} disabled={status === "loading"}>
+        {status === "loading" ? "⏳ Menjalankan (bisa beberapa menit)..." : "📥 Jalankan & Download CSV"}
+      </button>
+    </div>
+  );
+}
+
 export default function AdminTab() {
   return (
     <>
       <UsersSection />
       <ActivitySection />
+      <QuotaFlushSection />
       <SettingsSection />
       <SecretsSection />
       <HistorySection />
