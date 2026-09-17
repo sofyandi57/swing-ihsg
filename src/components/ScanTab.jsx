@@ -1,42 +1,58 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { authFetch } from "../lib/supabaseClient.js";
 
-const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-const ALL = "__ALL__";
-const MODES = [
-  { id: "global", label: "Global (950+ Saham)" },
-  { id: "sektor", label: "Sektor & Subsektor" },
-  { id: "value30m", label: "Value 30 Menit Terakhir" },
+const CRITERIA = [
+  { id: "global", icon: "🌐", label: "Scan Global", desc: "Semua ~950 saham, tanpa kriteria tambahan." },
+  { id: "sektor", icon: "🏷️", label: "Sektor & Subsektor", desc: "Pilih sektor (dan opsional subsektor) dari dropdown." },
+  { id: "value", icon: "💰", label: "Berdasarkan Value", desc: "Nilai transaksi hari ini minimum sekian Rupiah." },
+  { id: "volume_spike", icon: "📈", label: "Volume Spike", desc: "Rata-rata volume 3 hari terakhir jauh di atas rata-rata 20 hari." },
 ];
+
+const SORT_FIELDS_BY_MODE = {
+  global: [
+    { id: "volumeRatio", label: "Volume Ratio" },
+    { id: "value", label: "Value" },
+    { id: "priceChangePct", label: "Change %" },
+  ],
+  sektor: [
+    { id: "volumeRatio", label: "Volume Ratio" },
+    { id: "value", label: "Value" },
+    { id: "priceChangePct", label: "Change %" },
+  ],
+  value: [
+    { id: "value", label: "Value" },
+    { id: "volumeRatio", label: "Volume Ratio" },
+  ],
+  volume_spike: [
+    { id: "volRatio3v20", label: "Rasio Volume 3v20" },
+    { id: "priceChange3d", label: "Change 3 Hari %" },
+  ],
+};
 
 function formatNumber(n) {
   return new Intl.NumberFormat("id-ID").format(Math.round(n));
 }
 
 function formatCompact(n) {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}M`; // Miliar
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}M`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}Jt`;
   return formatNumber(n);
 }
 
-function ResultCard({ row, value30m }) {
+function ResultCard({ row, mode }) {
   const isUp = row.priceChangePct >= 0;
   return (
     <div className="result-card">
       <div className="result-card-top">
         <span className="result-code">{row.code}</span>
-        <span className="ratio-pill">{row.volumeRatio.toFixed(2)}x</span>
+        <span className="ratio-pill">
+          {mode === "volume_spike" ? `${row.volRatio3v20.toFixed(2)}x (20h)` : `${row.volumeRatio.toFixed(2)}x`}
+        </span>
       </div>
       {(row.sector || row.subsector) && (
-        <div className="sub" style={{ marginBottom: 4 }}>
+        <div className="sub" style={{ marginBottom: 8 }}>
           {row.sector || "—"}
           {row.subsector ? ` · ${row.subsector}` : ""}
-        </div>
-      )}
-      {row.quietAccumulation && (
-        <div className="cross-hit" style={{ marginTop: 0, marginBottom: 8 }}>
-          🤫 Akumulasi diam-diam: vol 3 hari {row.volRatio3v20.toFixed(2)}x rata-rata 20 hari, harga +
-          {row.priceChange3d.toFixed(1)}%
         </div>
       )}
       <div className="result-grid">
@@ -59,80 +75,88 @@ function ResultCard({ row, value30m }) {
           <span className="result-metric-label">Value</span>
           <span className="result-metric-value">{formatCompact(row.value)}</span>
         </div>
-        {value30m !== undefined && (
-          <div className="result-metric">
-            <span className="result-metric-label">Value 30m</span>
-            <span className="result-metric-value">{value30m === null ? "—" : formatCompact(value30m)}</span>
-          </div>
+        {mode === "volume_spike" && (
+          <>
+            <div className="result-metric">
+              <span className="result-metric-label">Avg Vol 3d</span>
+              <span className="result-metric-value">{formatCompact(row.avgVolume3d)}</span>
+            </div>
+            <div className="result-metric">
+              <span className="result-metric-label">Avg Vol 20d</span>
+              <span className="result-metric-value">{formatCompact(row.avgVolume20d)}</span>
+            </div>
+          </>
         )}
-        <div className="result-metric">
-          <span className="result-metric-label">Prev Price</span>
-          <span className="result-metric-value">{formatNumber(row.prevPrice)}</span>
-        </div>
       </div>
     </div>
   );
 }
 
-function ModeButton({ active, onClick, children }) {
-  return (
-    <button
-      className="btn btn-ghost"
-      style={{
-        flex: 1,
-        background: active ? "var(--accent-bg)" : "var(--panel-2)",
-        color: active ? "var(--accent)" : "var(--text)",
-        borderColor: active ? "var(--accent)" : "var(--border)",
-      }}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-function FilterChip({ active, onClick, children }) {
-  return (
-    <button
-      className="btn btn-ghost"
-      style={{
-        background: active ? "var(--accent-bg)" : "var(--panel-2)",
-        color: active ? "var(--accent)" : "var(--text)",
-        borderColor: active ? "var(--accent)" : "var(--border)",
-      }}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
 export default function ScanTab() {
+  const [criteriaMode, setCriteriaMode] = useState(null); // null = pilih kriteria dulu
+
+  // Konfigurasi mode "sektor"
+  const [sectorsList, setSectorsList] = useState(null);
+  const [sectorsError, setSectorsError] = useState("");
+  const [selectedSector, setSelectedSector] = useState("");
+  const [subsectorsList, setSubsectorsList] = useState(null);
+  const [subsectorsStatus, setSubsectorsStatus] = useState("idle"); // idle | loading | error
+  const [selectedSubsector, setSelectedSubsector] = useState("");
+
+  // Konfigurasi mode "value" & "volume_spike"
+  const [minValue, setMinValue] = useState("100000000");
+  const [minRatio, setMinRatio] = useState("1.5");
+
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
-  const [results, setResults] = useState([]); // top-N lolos filter volume ratio (punya subsector)
-  const [allResults, setAllResults] = useState([]); // SEMUA saham yang berhasil di-scan (tanpa subsector)
+  const [results, setResults] = useState([]);
   const [meta, setMeta] = useState(null);
   const [error, setError] = useState("");
   const [insight, setInsight] = useState("");
   const [insightStatus, setInsightStatus] = useState("idle");
 
-  const [filterMode, setFilterMode] = useState("sektor");
-  const [quietOnly, setQuietOnly] = useState(false);
+  const [sortField, setSortField] = useState("volumeRatio");
+  const [sortDir, setSortDir] = useState("desc");
 
-  // Mode Sektor & Subsektor
-  const [sectorFilter, setSectorFilter] = useState(ALL);
-  const [subsectorFilter, setSubsectorFilter] = useState(ALL);
-  const [letterFilter, setLetterFilter] = useState(ALL);
-  const [minValue, setMinValue] = useState("");
+  useEffect(() => {
+    if (criteriaMode !== "sektor" || sectorsList !== null) return;
+    (async () => {
+      try {
+        const resp = await authFetch("/api/sectors");
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+        setSectorsList(json.sectors || []);
+      } catch (e) {
+        setSectorsError(e.message);
+      }
+    })();
+  }, [criteriaMode, sectorsList]);
 
-  // Mode Global
-  const [globalMinValue, setGlobalMinValue] = useState("");
-  const [globalSectorFilter, setGlobalSectorFilter] = useState(ALL);
+  async function handleSectorChange(sector) {
+    setSelectedSector(sector);
+    setSelectedSubsector("");
+    setSubsectorsList(null);
+    if (!sector) return;
 
-  // Mode Value 30 Menit
-  const [value30mData, setValue30mData] = useState({}); // code -> nilai atau null
-  const [value30mStatus, setValue30mStatus] = useState("idle"); // idle | loading | error
-  const [value30mThreshold, setValue30mThreshold] = useState("100000000");
+    setSubsectorsStatus("loading");
+    try {
+      const resp = await authFetch(`/api/sectors?sector=${encodeURIComponent(sector)}`);
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setSubsectorsList(json.subsectors || []);
+      setSubsectorsStatus("idle");
+    } catch (e) {
+      setSubsectorsStatus("error");
+    }
+  }
+
+  function selectCriteria(id) {
+    setCriteriaMode(id);
+    setStatus("idle");
+    setResults([]);
+    setMeta(null);
+    setSortField(SORT_FIELDS_BY_MODE[id][0].id);
+    setSortDir("desc");
+  }
 
   async function fetchInsight(scanPayload) {
     setInsightStatus("loading");
@@ -157,16 +181,23 @@ export default function ScanTab() {
     setError("");
     setInsight("");
     setInsightStatus("idle");
-    setValue30mData({});
-    setValue30mStatus("idle");
+
+    const params = new URLSearchParams({ mode: criteriaMode });
+    if (criteriaMode === "sektor") {
+      params.set("sector", selectedSector);
+      if (selectedSubsector) params.set("subsector", selectedSubsector);
+    } else if (criteriaMode === "value") {
+      params.set("minValue", minValue || "0");
+    } else if (criteriaMode === "volume_spike") {
+      params.set("minRatio", minRatio || "1");
+    }
 
     try {
-      const resp = await authFetch("/api/screener");
+      const resp = await authFetch(`/api/screener?${params.toString()}`);
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
       setResults(json.data || []);
-      setAllResults(json.allData || []);
       setMeta(json);
       setStatus("done");
 
@@ -179,115 +210,146 @@ export default function ScanTab() {
     }
   }
 
-  async function fetchValue30m(codes) {
-    setValue30mStatus("loading");
-    try {
-      const resp = await authFetch("/api/intraday-value", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes }),
-      });
-      const json = await resp.json();
-      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
-      const map = {};
-      (json.results || []).forEach((r) => {
-        map[r.code] = r.value30m;
-      });
-      setValue30mData(map);
-      setValue30mStatus("idle");
-    } catch (e) {
-      setValue30mStatus("error");
-    }
-  }
+  const sortedResults = useMemo(() => {
+    const sorted = [...results].sort((a, b) => {
+      const av = a[sortField];
+      const bv = b[sortField];
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      return sortDir === "desc" ? bv - av : av - bv;
+    });
+    return sorted;
+  }, [results, sortField, sortDir]);
 
-  // ===== Dataset dasar per mode =====
-  const sectors = useMemo(() => [...new Set(results.map((r) => r.sector).filter(Boolean))].sort(), [results]);
-  const subsectors = useMemo(() => [...new Set(results.map((r) => r.subsector).filter(Boolean))].sort(), [results]);
-  const availableLetters = useMemo(() => new Set(results.map((r) => r.code[0])), [results]);
-  const globalSectors = useMemo(() => [...new Set(allResults.map((r) => r.sector).filter(Boolean))].sort(), [allResults]);
-
-  const filteredResults = useMemo(() => {
-    let base;
-
-    if (filterMode === "global") {
-      const minVal = globalMinValue ? Number(globalMinValue) : 0;
-      base = allResults.filter((r) => {
-        if (globalSectorFilter !== ALL && r.sector !== globalSectorFilter) return false;
-        if (minVal > 0 && r.value < minVal) return false;
-        return true;
-      });
-    } else if (filterMode === "sektor") {
-      const minVal = minValue ? Number(minValue) : 0;
-      base = results.filter((r) => {
-        if (sectorFilter !== ALL && r.sector !== sectorFilter) return false;
-        if (subsectorFilter !== ALL && r.subsector !== subsectorFilter) return false;
-        if (letterFilter !== ALL && r.code[0] !== letterFilter) return false;
-        if (minVal > 0 && r.value < minVal) return false;
-        return true;
-      });
-    } else {
-      // value30m — dasar dari hasil filtered (top-N), disaring lagi kalau data value30m sudah dimuat
-      const threshold = value30mThreshold ? Number(value30mThreshold) : 0;
-      base = results.filter((r) => {
-        if (Object.keys(value30mData).length === 0) return true; // belum dicek, tampilkan semua dulu
-        const v = value30mData[r.code];
-        if (v === undefined) return true;
-        if (v === null) return false; // gagal diambil datanya
-        return v >= threshold;
-      });
-    }
-
-    if (quietOnly) base = base.filter((r) => r.quietAccumulation);
-    return [...base].sort((a, b) => b.volumeRatio - a.volumeRatio);
-  }, [
-    filterMode,
-    allResults,
-    results,
-    globalSectorFilter,
-    globalMinValue,
-    sectorFilter,
-    subsectorFilter,
-    letterFilter,
-    minValue,
-    value30mData,
-    value30mThreshold,
-    quietOnly,
-  ]);
-
-  const hasActiveFilter =
-    filterMode === "sektor"
-      ? sectorFilter !== ALL || subsectorFilter !== ALL || letterFilter !== ALL || minValue !== "" || quietOnly
-      : filterMode === "global"
-      ? globalSectorFilter !== ALL || globalMinValue !== "" || quietOnly
-      : quietOnly;
-
-  function resetFilters() {
-    setSectorFilter(ALL);
-    setSubsectorFilter(ALL);
-    setLetterFilter(ALL);
-    setMinValue("");
-    setGlobalSectorFilter(ALL);
-    setGlobalMinValue("");
-    setQuietOnly(false);
-  }
+  const canRun =
+    criteriaMode === "global" ||
+    (criteriaMode === "sektor" && selectedSector) ||
+    (criteriaMode === "value" && minValue) ||
+    (criteriaMode === "volume_spike" && minRatio);
 
   return (
     <>
-      <div className="card">
-        <h2>⚡ One-Button Scalping Scan</h2>
-        <p className="sub">
-          Pindai ~900 saham BEI, cari lonjakan volume ≥3x sekaligus pola akumulasi
-          diam-diam 3 vs 20 hari. Proses ini bisa memakan waktu 30 detik sampai 2 menit.
-        </p>
-        <button className="btn btn-primary btn-block" onClick={runScan} disabled={status === "loading"}>
-          {status === "loading" ? "⏳ Memindai..." : "▶ Run Scan"}
-        </button>
-      </div>
+      {criteriaMode === null && (
+        <div className="card">
+          <h2>⚡ Pilih Kriteria Scan</h2>
+          <p className="sub">Pilih kriteria dulu — hasil yang keluar sudah langsung final sesuai pilihan ini.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {CRITERIA.map((c) => (
+              <button
+                key={c.id}
+                className="btn btn-ghost"
+                style={{ justifyContent: "flex-start", textAlign: "left", minHeight: 56, padding: "10px 14px" }}
+                onClick={() => selectCriteria(c.id)}
+              >
+                <span style={{ fontSize: 20, marginRight: 10 }}>{c.icon}</span>
+                <span>
+                  <div style={{ fontWeight: 700 }}>{c.label}</div>
+                  <div className="sub" style={{ marginBottom: 0, fontSize: 11.5 }}>{c.desc}</div>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {criteriaMode !== null && (
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <h2 style={{ marginBottom: 0 }}>
+              {CRITERIA.find((c) => c.id === criteriaMode)?.icon} {CRITERIA.find((c) => c.id === criteriaMode)?.label}
+            </h2>
+            <button className="btn btn-ghost" onClick={() => setCriteriaMode(null)}>
+              ← Ganti Kriteria
+            </button>
+          </div>
+
+          {criteriaMode === "sektor" && (
+            <>
+              <p className="sub">Scan dipersempit ke sektor ini saja — lebih cepat dari scan global.</p>
+              {sectorsError && <div className="error-box">Gagal memuat daftar sektor: {sectorsError}</div>}
+              <div style={{ marginBottom: 10 }}>
+                <div className="result-metric-label" style={{ marginBottom: 6 }}>SEKTOR</div>
+                <select
+                  className="input"
+                  style={{ minHeight: 44 }}
+                  value={selectedSector}
+                  onChange={(e) => handleSectorChange(e.target.value)}
+                  disabled={sectorsList === null}
+                >
+                  <option value="">{sectorsList === null ? "Memuat sektor..." : "— Pilih sektor —"}</option>
+                  {(sectorsList || []).map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedSector && (
+                <div style={{ marginBottom: 10 }}>
+                  <div className="result-metric-label" style={{ marginBottom: 6 }}>SUBSEKTOR (OPSIONAL)</div>
+                  <select
+                    className="input"
+                    style={{ minHeight: 44 }}
+                    value={selectedSubsector}
+                    onChange={(e) => setSelectedSubsector(e.target.value)}
+                    disabled={subsectorsStatus === "loading"}
+                  >
+                    <option value="">
+                      {subsectorsStatus === "loading" ? "Memuat subsektor..." : "Semua subsektor"}
+                    </option>
+                    {(subsectorsList || []).map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                  {subsectorsStatus === "error" && <div className="error-box">Gagal memuat subsektor.</div>}
+                </div>
+              )}
+            </>
+          )}
+
+          {criteriaMode === "value" && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="result-metric-label" style={{ marginBottom: 6 }}>NILAI TRANSAKSI MINIMUM HARI INI (RP)</div>
+              <input
+                className="input"
+                style={{ minHeight: 44 }}
+                type="number"
+                placeholder="Contoh: 100000000 (100 juta)"
+                value={minValue}
+                onChange={(e) => setMinValue(e.target.value)}
+              />
+            </div>
+          )}
+
+          {criteriaMode === "volume_spike" && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="result-metric-label" style={{ marginBottom: 6 }}>
+                MINIMUM RASIO VOLUME (3 HARI TERAKHIR vs RATA-RATA 20 HARI SEBELUMNYA)
+              </div>
+              <input
+                className="input"
+                style={{ minHeight: 44 }}
+                type="number"
+                step="0.1"
+                placeholder="Contoh: 1.5 (artinya 1.5x lebih tinggi)"
+                value={minRatio}
+                onChange={(e) => setMinRatio(e.target.value)}
+              />
+              <p className="sub" style={{ marginTop: 6, marginBottom: 0 }}>
+                Butuh minimal 23 hari data perdagangan per saham — saham yang baru IPO/lama suspend otomatis dilewati.
+              </p>
+            </div>
+          )}
+
+          <button className="btn btn-primary btn-block" onClick={runScan} disabled={!canRun || status === "loading"}>
+            {status === "loading" ? "⏳ Memindai..." : "▶ Jalankan Scan"}
+          </button>
+        </div>
+      )}
 
       {meta && status !== "loading" && (
         <div className="meta-text">
           Terakhir dipindai: {new Date(meta.scannedAt).toLocaleTimeString("id-ID")} ·{" "}
-          {meta.totalScanned} saham dicek · {results.length} lolos filter volume ·{" "}
+          {meta.totalScanned} saham dicek · {results.length} cocok kriteria ·{" "}
           {(meta.durationMs / 1000).toFixed(1)}s ·{" "}
           {meta.saved ? "✓ tersimpan ke histori" : `⚠ tidak tersimpan (${meta.saveError || "?"})`}
         </div>
@@ -309,174 +371,29 @@ export default function ScanTab() {
         </div>
       )}
 
-      {status === "done" && (
-        <div className="card">
-          <h2>🔍 Filter Hasil</h2>
-          <p className="sub">Pilih salah satu mode filter di bawah, lalu saring lebih lanjut.</p>
-
-          <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-            {MODES.map((m) => (
-              <ModeButton key={m.id} active={filterMode === m.id} onClick={() => setFilterMode(m.id)}>
-                {m.label}
-              </ModeButton>
-            ))}
-          </div>
-
-          <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-              <input type="checkbox" checked={quietOnly} onChange={(e) => setQuietOnly(e.target.checked)} />
-              🤫 Hanya "Akumulasi Diam-Diam" (volume 3 hari &gt; rata-rata 20 hari, harga naik 0-10%)
-            </label>
-          </div>
-
-          {filterMode === "global" && (
-            <>
-              <p className="sub">
-                Menampilkan SEMUA {allResults.length} saham yang berhasil di-scan hari ini (bukan
-                cuma yang lolos filter volume ratio ≥3x) — subsektor tidak tersedia di mode ini
-                (terlalu berat dipanggil untuk 900 saham sekaligus).
-              </p>
-              <div style={{ marginBottom: 10 }}>
-                <div className="result-metric-label" style={{ marginBottom: 6 }}>SEKTOR</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <FilterChip active={globalSectorFilter === ALL} onClick={() => setGlobalSectorFilter(ALL)}>Semua</FilterChip>
-                  {globalSectors.map((s) => (
-                    <FilterChip key={s} active={globalSectorFilter === s} onClick={() => setGlobalSectorFilter(s)}>
-                      {s}
-                    </FilterChip>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="result-metric-label" style={{ marginBottom: 6 }}>NILAI TRANSAKSI MINIMUM (RP)</div>
-                <input
-                  className="input"
-                  style={{ minHeight: 40 }}
-                  type="number"
-                  placeholder="Contoh: 1000000000 (1 miliar)"
-                  value={globalMinValue}
-                  onChange={(e) => setGlobalMinValue(e.target.value)}
-                />
-              </div>
-            </>
-          )}
-
-          {filterMode === "sektor" && (
-            <>
-              <div style={{ marginBottom: 10 }}>
-                <div className="result-metric-label" style={{ marginBottom: 6 }}>SEKTOR</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <FilterChip active={sectorFilter === ALL} onClick={() => setSectorFilter(ALL)}>Semua</FilterChip>
-                  {sectors.map((s) => (
-                    <FilterChip key={s} active={sectorFilter === s} onClick={() => setSectorFilter(s)}>
-                      {s}
-                    </FilterChip>
-                  ))}
-                </div>
-              </div>
-
-              {subsectors.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  <div className="result-metric-label" style={{ marginBottom: 6 }}>SUBSEKTOR</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <FilterChip active={subsectorFilter === ALL} onClick={() => setSubsectorFilter(ALL)}>Semua</FilterChip>
-                    {subsectors.map((s) => (
-                      <FilterChip key={s} active={subsectorFilter === s} onClick={() => setSubsectorFilter(s)}>
-                        {s}
-                      </FilterChip>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div style={{ marginBottom: 10 }}>
-                <div className="result-metric-label" style={{ marginBottom: 6 }}>ABJAD DEPAN</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <FilterChip active={letterFilter === ALL} onClick={() => setLetterFilter(ALL)}>Semua</FilterChip>
-                  {ALPHABET.filter((l) => availableLetters.has(l)).map((l) => (
-                    <FilterChip key={l} active={letterFilter === l} onClick={() => setLetterFilter(l)}>
-                      {l}
-                    </FilterChip>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <div className="result-metric-label" style={{ marginBottom: 6 }}>NILAI TRANSAKSI MINIMUM (RP)</div>
-                <input
-                  className="input"
-                  style={{ minHeight: 40 }}
-                  type="number"
-                  placeholder="Contoh: 1000000000 (1 miliar)"
-                  value={minValue}
-                  onChange={(e) => setMinValue(e.target.value)}
-                />
-              </div>
-            </>
-          )}
-
-          {filterMode === "value30m" && (
-            <>
-              <p className="sub">
-                Cek total nilai transaksi 30 menit terakhir untuk {results.length} saham yang
-                lolos filter volume ratio. Data intraday, dipanggil khusus saat tombol diklik
-                (tidak otomatis, supaya hemat panggilan API).
-              </p>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-end" }}>
-                <div style={{ flex: 1 }}>
-                  <div className="result-metric-label" style={{ marginBottom: 6 }}>MINIMUM VALUE 30 MENIT (RP)</div>
-                  <input
-                    className="input"
-                    style={{ minHeight: 40 }}
-                    type="number"
-                    placeholder="Contoh: 100000000 (100 juta)"
-                    value={value30mThreshold}
-                    onChange={(e) => setValue30mThreshold(e.target.value)}
-                  />
-                </div>
-                <button
-                  className="btn btn-primary"
-                  style={{ minHeight: 40 }}
-                  onClick={() => fetchValue30m(results.map((r) => r.code))}
-                  disabled={value30mStatus === "loading" || results.length === 0}
-                >
-                  {value30mStatus === "loading" ? "Mengecek..." : "Cek Sekarang"}
-                </button>
-              </div>
-              {value30mStatus === "error" && <div className="error-box">Gagal mengambil data intraday.</div>}
-              {Object.keys(value30mData).length === 0 && value30mStatus !== "loading" && (
-                <div className="sub">Klik "Cek Sekarang" untuk memuat data — sebelum itu semua saham ditampilkan.</div>
-              )}
-            </>
-          )}
-
-          {hasActiveFilter && (
-            <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={resetFilters}>
-              ✕ Reset Filter
-            </button>
-          )}
-        </div>
+      {status === "done" && results.length === 0 && (
+        <div className="state-box">Tidak ada saham yang cocok dengan kriteria ini.</div>
       )}
 
-      {status === "done" && (
+      {status === "done" && results.length > 0 && (
         <>
-          <div className="meta-text">
-            Menampilkan {filteredResults.length} saham
-            {filterMode === "global" ? ` dari ${allResults.length} total di-scan` : ` dari ${results.length} lolos filter volume`}.
-          </div>
-          {filteredResults.length === 0 ? (
-            <div className="state-box">Tidak ada saham yang cocok dengan filter ini.</div>
-          ) : (
-            <div className="result-list">
-              {filteredResults.map((row) => (
-                <ResultCard
-                  key={row.code}
-                  row={row}
-                  value30m={filterMode === "value30m" ? value30mData[row.code] : undefined}
-                />
+          <div className="card" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span className="result-metric-label">URUTKAN</span>
+            <select className="input" style={{ minHeight: 36, flex: 1 }} value={sortField} onChange={(e) => setSortField(e.target.value)}>
+              {SORT_FIELDS_BY_MODE[criteriaMode].map((f) => (
+                <option key={f.id} value={f.id}>{f.label}</option>
               ))}
-            </div>
-          )}
+            </select>
+            <button className="btn btn-ghost" onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")}>
+              {sortDir === "desc" ? "↓ Descending" : "↑ Ascending"}
+            </button>
+          </div>
+
+          <div className="result-list">
+            {sortedResults.map((row) => (
+              <ResultCard key={row.code} row={row} mode={criteriaMode} />
+            ))}
+          </div>
         </>
       )}
     </>

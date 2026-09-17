@@ -22,6 +22,9 @@
     },
     "api/intraday-value.js": {
       "maxDuration": 30
+    },
+    "api/sectors.js": {
+      "maxDuration": 30
     }
   }
 }

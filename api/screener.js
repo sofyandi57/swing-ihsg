@@ -1,11 +1,22 @@
 // api/screener.js
 // Vercel Serverless Function — proxy ke Invezgo API, dijalankan HANYA saat browser
-// memanggilnya (lewat tombol "Run Scan" di frontend). Tidak ada cache, tidak ada
-// auto-polling — setiap panggilan = satu scan penuh ke ~900 saham.
+// memanggilnya (lewat salah satu dari 4 tombol kriteria di tab Run Scan). Tidak
+// ada cache, tidak ada auto-polling — setiap panggilan = satu scan penuh.
 //
-// Setelah scan selesai, SEMUA hasil (bukan hanya yang lolos filter) disimpan ke
-// Supabase sebagai histori: satu baris di scan_runs (metadata run), dan satu baris
-// per saham di scan_results (ditandai passed_filter true/false).
+// User memilih KRITERIA DULU (mode) sebelum scan berjalan — bukan filter sesudah
+// hasil keluar. GET /api/screener?mode=<global|sektor|value|volume_spike>&...
+//   mode=global                              — semua saham, tanpa kriteria
+//   mode=sektor&sector=X&subsector=Y(opsional) — hanya sektor/subsektor itu
+//   mode=value&minValue=100000000            — value transaksi >= itu
+//   mode=volume_spike&minRatio=1.5           — rata2 volume 3 hari >= 1.5x rata2 20 hari
+//
+// Hasil yang dikembalikan SUDAH FINAL (server-side filtered) — frontend cuma
+// sort ascending/descending, tidak ada filter lanjutan di browser.
+//
+// Setelah scan selesai, SEMUA saham yang berhasil di-scan (bukan hanya yang
+// cocok kriteria) disimpan ke Supabase sebagai histori: satu baris di scan_runs
+// (metadata run), dan satu baris per saham di scan_results (ditandai
+// passed_filter true/false — true berarti cocok kriteria run itu).
 //
 // Durasi: dengan Fluid Compute (default Vercel sekarang), Hobby plan punya default
 // maxDuration 300 detik — cukup untuk scan 900 saham dengan concurrency terbatas.
@@ -185,60 +196,79 @@ async function getDailyMetrics(code) {
   };
 }
 
-async function runFullScan() {
+// Empat mode kriteria — dipilih User SEBELUM scan (bukan filter sesudahnya):
+//   global       — semua saham yang berhasil di-scan, tanpa kriteria tambahan
+//   sektor       — hanya saham di sektor (dan opsional subsektor) yang dipilih;
+//                  codes DIPERSEMPIT sebelum fetch chart, jadi scan-nya lebih
+//                  cepat (bukan cuma filter tampilan)
+//   value        — value (price x volume) hari ini >= minValue
+//   volume_spike — rata-rata volume 3 hari terakhir >= minRatio x rata-rata
+//                  volume 20 hari sebelumnya (butuh >=23 hari data — lihat
+//                  getDailyMetrics)
+async function runScan({ mode, sector, subsector, minValue, minRatio }) {
   const stockList = await invezgoGet("/analysis/list/stock");
-  const codes = stockList.map((s) => s.code);
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
+
+  let codes = stockList.map((s) => s.code);
+  if (mode === "sektor" && sector) {
+    codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
+  }
 
   const pooledResults = await runPool(codes, CONCURRENCY, getDailyMetrics);
   const rawResults = pooledResults.filter(Boolean);
 
-  // Hitung rasio & tandai lolos filter atau tidak — INI SEMUA SAHAM, belum di-slice.
   // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
-  // nilai transaksi hari ini (price x volume), dipakai untuk filter "value" di UI.
-  // quietAccumulation: volume 3 hari terakhir rata-rata LEBIH TINGGI dari volume
-  // 20 hari sebelumnya, TAPI harga cuma naik 0-10% (bukan lonjakan tajam) — pola
-  // "akumulasi diam-diam", beda dari volumeRatio (lonjakan 1-2 hari, biasanya
-  // disertai harga bergerak tajam juga).
+  // nilai transaksi hari ini (price x volume).
   const allWithRatio = rawResults.map((r) => {
     const volumeRatio = r.volume / r.prevVolume;
     const priceChangePct = ((r.price - r.prevPrice) / r.prevPrice) * 100;
-    const passedFilter =
-      volumeRatio >= MIN_VOLUME_RATIO &&
-      r.prevVolume >= MIN_PREV_VOLUME &&
-      r.price >= MIN_PRICE;
+    // Metadata informatif (ditampilkan sebagai badge di card) — TIDAK dipakai
+    // untuk menyaring hasil di mode manapun kecuali "volume_spike" (yang pakai
+    // volRatio3v20 mentah, tanpa syarat harga 0-10% ini).
     const quietAccumulation =
-      r.volRatio3v20 !== null &&
-      r.priceChange3d !== null &&
-      r.volRatio3v20 >= 1.0 &&
-      r.priceChange3d >= 0 &&
-      r.priceChange3d <= 10;
+      r.volRatio3v20 !== null && r.priceChange3d !== null && r.volRatio3v20 >= 1.0 && r.priceChange3d >= 0 && r.priceChange3d <= 10;
     return {
       ...r,
       volumeRatio,
       priceChangePct,
-      passedFilter,
       quietAccumulation,
       sector: sectorByCode.get(r.code) || null,
       value: r.price * r.volume,
     };
   });
 
-  const filtered = allWithRatio
-    .filter((r) => r.passedFilter)
-    .sort((a, b) => b.volumeRatio - a.volumeRatio)
-    .slice(0, TOP_N);
+  // Subsector: mode "sektor" sudah mempersempit codes ke satu sektor (biasanya
+  // puluhan-ratusan saham, bukan 900) — jadi terjangkau untuk fetch subsector
+  // SEMUA baris di mode ini, bukan cuma top-N seperti sebelumnya.
+  if (mode === "sektor") {
+    const subsectorBatch = await Promise.all(allWithRatio.map((r) => getSubsector(r.code)));
+    allWithRatio.forEach((r, i) => {
+      r.subsector = subsectorBatch[i];
+    });
+  }
 
-  // Subsector hanya untuk saham yang lolos filter (~25) — lihat catatan di getSubsector.
-  const subsectorBatch = await Promise.all(filtered.map((r) => getSubsector(r.code)));
-  filtered.forEach((r, i) => {
-    r.subsector = subsectorBatch[i];
-  });
+  let matched;
+  if (mode === "value") {
+    const threshold = Number(minValue) || 0;
+    matched = allWithRatio.filter((r) => r.value >= threshold).sort((a, b) => b.value - a.value);
+  } else if (mode === "volume_spike") {
+    const threshold = Number(minRatio) || 1;
+    matched = allWithRatio
+      .filter((r) => r.volRatio3v20 !== null && r.volRatio3v20 >= threshold)
+      .sort((a, b) => b.volRatio3v20 - a.volRatio3v20);
+  } else if (mode === "sektor") {
+    matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio).sort(
+      (a, b) => b.volumeRatio - a.volumeRatio
+    );
+  } else {
+    // global — tanpa kriteria tambahan
+    matched = [...allWithRatio].sort((a, b) => b.volumeRatio - a.volumeRatio);
+  }
 
-  return { all: allWithRatio, filtered, totalScanned: codes.length };
+  return { all: allWithRatio, matched, totalScanned: codes.length };
 }
 
-async function saveToSupabase({ all, filtered, totalScanned, durationMs, scannedAtIso }) {
+async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return { saved: false, reason: "Supabase belum dikonfigurasi (env var kosong)." };
   }
@@ -247,6 +277,8 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
+  const matchedCodes = new Set(matched.map((r) => r.code));
+
   // 1. Insert satu baris scan_runs, ambil ID-nya untuk foreign key di scan_results
   const { data: runRow, error: runError } = await supabase
     .from("scan_runs")
@@ -254,7 +286,7 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
       scanned_at: scannedAtIso,
       duration_ms: durationMs,
       total_scanned: totalScanned,
-      total_passed_filter: filtered.length,
+      total_passed_filter: matched.length,
       min_volume_ratio: MIN_VOLUME_RATIO,
       min_prev_volume: MIN_PREV_VOLUME,
       min_price: MIN_PRICE,
@@ -266,8 +298,8 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
     return { saved: false, reason: `Gagal insert scan_runs: ${runError.message}` };
   }
 
-  // 2. Insert SEMUA saham (bukan hanya yang lolos filter) ke scan_results,
-  //    dalam batch supaya tidak mengirim satu payload raksasa sekaligus
+  // 2. Insert SEMUA saham yang berhasil di-scan (bukan hanya yang cocok kriteria
+  //    yang dipilih), dalam batch supaya tidak mengirim satu payload raksasa sekaligus
   const rows = all.map((r) => ({
     run_id: runRow.id,
     code: r.code,
@@ -277,9 +309,9 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
     price: r.price,
     prev_price: r.prevPrice,
     price_change_pct: r.priceChangePct,
-    passed_filter: r.passedFilter,
+    passed_filter: matchedCodes.has(r.code),
     sector: r.sector,
-    subsector: r.subsector || null, // hanya terisi untuk baris yang lolos filter
+    subsector: r.subsector || null, // hanya terisi untuk mode "sektor"
     value: r.value,
     avg_volume_3d: r.avgVolume3d,
     avg_volume_20d: r.avgVolume20d,
@@ -318,18 +350,35 @@ export default async function handler(req, res) {
 
   await loadSettingsOverrides();
 
+  const mode = req.query?.mode || "global";
+  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike"]);
+  if (!VALID_MODES.has(mode)) {
+    res.status(400).json({ error: `mode '${mode}' tidak valid. Pilihan: ${[...VALID_MODES].join(", ")}.` });
+    return;
+  }
+  if (mode === "sektor" && !req.query?.sector) {
+    res.status(400).json({ error: "Mode 'sektor' butuh parameter 'sector'." });
+    return;
+  }
+
   const startedAt = Date.now();
   const scannedAtIso = new Date(startedAt).toISOString();
 
   try {
-    const { all, filtered, totalScanned } = await runFullScan();
+    const { all, matched, totalScanned } = await runScan({
+      mode,
+      sector: req.query?.sector,
+      subsector: req.query?.subsector,
+      minValue: req.query?.minValue,
+      minRatio: req.query?.minRatio,
+    });
     const durationMs = Date.now() - startedAt;
 
     // Simpan ke Supabase — kalau gagal, tetap kembalikan hasil scan ke browser
     // (jangan gagalkan scan yang sudah berhasil hanya karena penyimpanan histori gagal)
     const saveResult = await saveToSupabase({
       all,
-      filtered,
+      matched,
       totalScanned,
       durationMs,
       scannedAtIso,
@@ -337,8 +386,8 @@ export default async function handler(req, res) {
 
     res.setHeader("Cache-Control", "no-store");
     res.status(200).json({
-      data: filtered,
-      allData: all, // untuk mode filter "Global (950+ Saham)" — semua saham yang berhasil di-scan
+      mode,
+      data: matched,
       totalScanned,
       scannedAt: startedAt,
       durationMs,
