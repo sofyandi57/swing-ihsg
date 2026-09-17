@@ -24,23 +24,69 @@ const SOURCE_LABEL = {
   manual: "manual",
 };
 
-function WatchlistCard({ item }) {
+// Warna baris ratio berdasarkan arah harga: hijau = naik (positif), merah =
+// turun (negatif), kuning = netral/nyaris flat (|perubahan| < 0.5%).
+function changeColorClass(priceChangePct) {
+  if (priceChangePct == null) return "neutral";
+  if (priceChangePct > 0.5) return "up";
+  if (priceChangePct < -0.5) return "down";
+  return "neutral";
+}
+
+function WatchlistCard({ item, onRemove }) {
   const scan = item.latestScan;
   const isHot = scan && scan.passedFilter;
+  const [removing, setRemoving] = useState(false);
+
+  async function handleRemove() {
+    if (!window.confirm(`Hapus ${item.code} dari watchlist?`)) return;
+    setRemoving(true);
+    await onRemove(item.code);
+  }
 
   return (
     <div className="result-card">
       <div className="result-card-top">
         <span className="result-code">{item.code}</span>
-        <span className="ratio-pill" style={{ background: "var(--panel)", color: "var(--muted)" }}>
-          {SOURCE_LABEL[item.source] || item.source}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="ratio-pill" style={{ background: "var(--panel)", color: "var(--muted)" }}>
+            {SOURCE_LABEL[item.source] || item.source}
+          </span>
+          <button
+            onClick={handleRemove}
+            disabled={removing}
+            title="Hapus dari watchlist"
+            aria-label={`Hapus ${item.code} dari watchlist`}
+            style={{
+              appearance: "none",
+              border: "1px solid var(--border)",
+              background: "var(--panel)",
+              color: "var(--muted)",
+              borderRadius: "999px",
+              width: 24,
+              height: 24,
+              minHeight: 24,
+              padding: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: 13,
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
       </div>
       {item.notes && <div className="sub" style={{ marginBottom: 8 }}>{item.notes}</div>}
       {scan ? (
-        <div className={isHot ? "cross-hit" : "cross-miss"}>
-          {isHot ? "✓" : "—"} Ratio {Number(scan.volumeRatio).toFixed(2)}x, harga {formatNumber(scan.price)},{" "}
-          {isHot ? "lolos filter sekarang" : "belum lolos filter"} · terakhir scan{" "}
+        <div className={changeColorClass(scan.priceChangePct)}>
+          {isHot ? "✓" : "—"} Ratio {Number(scan.volumeRatio).toFixed(2)}x, harga {formatNumber(scan.price)}
+          {scan.priceChangePct != null && (
+            <> ({scan.priceChangePct >= 0 ? "+" : ""}{Number(scan.priceChangePct).toFixed(2)}%)</>
+          )}
+          , {isHot ? "lolos filter sekarang" : "belum lolos filter"} · terakhir scan{" "}
           {new Date(scan.scannedAt).toLocaleDateString("id-ID")}
         </div>
       ) : (
@@ -72,6 +118,17 @@ export default function WatchlistTab() {
   useEffect(() => {
     loadWatchlist();
   }, []);
+
+  async function removeFromWatchlist(code) {
+    try {
+      const resp = await authFetch(`/api/pdf-watchlist?code=${encodeURIComponent(code)}`, { method: "DELETE" });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setItems((prev) => (prev || []).filter((it) => it.code !== code));
+    } catch (e) {
+      setError(`Gagal hapus ${code}: ${e.message}`);
+    }
+  }
 
   async function handleFileChange(e) {
     const file = e.target.files?.[0];
@@ -165,7 +222,7 @@ export default function WatchlistTab() {
         {items && items.length > 0 && (
           <div className="result-list">
             {items.map((item) => (
-              <WatchlistCard key={item.code} item={item} />
+              <WatchlistCard key={item.code} item={item} onRemove={removeFromWatchlist} />
             ))}
           </div>
         )}

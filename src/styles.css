@@ -22,6 +22,8 @@
   --green-bg: oklch(72% 0.17 152 / 0.12);
   --red: oklch(65% 0.21 25);
   --red-bg: oklch(65% 0.21 25 / 0.12);
+  --yellow: oklch(80% 0.16 95);
+  --yellow-bg: oklch(80% 0.16 95 / 0.12);
   --accent: oklch(66% 0.19 260);
   --accent-bg: oklch(66% 0.19 260 / 0.14);
   --accent-2: oklch(64% 0.19 293);
@@ -333,6 +335,7 @@ body {
 .result-metric-value { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .up { color: var(--green); }
 .down { color: var(--red); }
+.neutral { color: var(--yellow); }
 
 /* ===== AI insight box ===== */
 .insight-box {

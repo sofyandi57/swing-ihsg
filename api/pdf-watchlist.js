@@ -52,8 +52,12 @@ async function getValidStockCodes() {
   return new Set(stocks.map((s) => s.code.toUpperCase()));
 }
 
+// Sama seperti mentor-call.js: JANGAN text.toUpperCase() dulu — itu bikin kata
+// Title-Case biasa ("Jawa", "Naik", "Laba") ikut ter-uppercase dan salah kena
+// tangkap kalau kebetulan cocok kode ticker resmi. Kode saham asli selalu
+// ditulis FULL CAPS di teks aslinya.
 function extractCandidatesRegex(text) {
-  const candidates = text.toUpperCase().match(/\b[A-Z]{4}\b/g) || [];
+  const candidates = text.match(/\b[A-Z]{4}\b/g) || [];
   return [...new Set(candidates)].filter((c) => !COMMON_WORD_BLOCKLIST.has(c));
 }
 
@@ -131,6 +135,24 @@ async function extractWithGroq(text) {
   } catch (e) {
     return { codes: [], notes: {}, skipped: true, reason: String(e.message || e) };
   }
+}
+
+// Hapus SATU kode dari watchlist — dipanggil tombol "×" di tab Watchlist.
+// Tidak menghapus histori pdf_extracts/mentor_calls, cuma baris di watchlist
+// aktif (kalau kode itu disebut lagi nanti dari sumber manapun, akan masuk
+// lagi lewat upsert seperti biasa).
+async function handleDelete(req, res, supabase) {
+  const code = ((req.query && req.query.code) || "").toUpperCase().trim();
+  if (!code) {
+    res.status(400).json({ error: "Parameter 'code' wajib diisi." });
+    return;
+  }
+  const { error } = await supabase.from("watchlist").delete().eq("code", code);
+  if (error) {
+    res.status(502).json({ error: error.message });
+    return;
+  }
+  res.status(200).json({ deleted: true, code });
 }
 
 async function handleUpload(req, res, supabase) {
@@ -236,7 +258,7 @@ async function handleGetWatchlist(req, res, supabase) {
   // JS karena Supabase-js tidak mendukung LATERAL JOIN langsung.
   const { data: recentResults, error: resultsError } = await supabase
     .from("scan_results")
-    .select("code, volume_ratio, price, passed_filter, run_id, scan_runs!inner(scanned_at)")
+    .select("code, volume_ratio, price, price_change_pct, passed_filter, run_id, scan_runs!inner(scanned_at)")
     .in("code", codes)
     .order("scanned_at", { foreignTable: "scan_runs", ascending: false });
 
@@ -257,6 +279,7 @@ async function handleGetWatchlist(req, res, supabase) {
       ? {
           volumeRatio: latestByCode[w.code].volume_ratio,
           price: latestByCode[w.code].price,
+          priceChangePct: latestByCode[w.code].price_change_pct,
           passedFilter: latestByCode[w.code].passed_filter,
           scannedAt: latestByCode[w.code].scan_runs.scanned_at,
         }
@@ -286,5 +309,10 @@ export default async function handler(req, res) {
     return;
   }
 
-  res.status(405).json({ error: "Method tidak didukung. Gunakan GET atau POST." });
+  if (req.method === "DELETE") {
+    await handleDelete(req, res, supabase);
+    return;
+  }
+
+  res.status(405).json({ error: "Method tidak didukung. Gunakan GET, POST, atau DELETE." });
 }

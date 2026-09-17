@@ -72,9 +72,9 @@ function AddToWatchlistButton({ code, notes }) {
 }
 
 function CrossCheckResult({ json, sourceMessage }) {
-  const { detectedCodes, boldCodes, scanCrossCheck, pastMentions, receivedAt, groqUsed, groqSkipReason } = json;
+  const { detectedCodes, boldCodes, codeContext, scanCrossCheck, pastMentions, receivedAt, groqUsed, groqSkipReason } = json;
   const boldSet = new Set(boldCodes || []);
-  const notesSnippet = (sourceMessage || "").slice(0, 200);
+  const fallbackSnippet = (sourceMessage || "").slice(0, 200);
 
   if (detectedCodes.length === 0) {
     return (
@@ -123,7 +123,7 @@ function CrossCheckResult({ json, sourceMessage }) {
             )}
             <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <CodeCheckResult code={code} />
-              <AddToWatchlistButton code={code} notes={notesSnippet} />
+              <AddToWatchlistButton code={code} notes={(codeContext && codeContext[code]) || fallbackSnippet} />
             </div>
           </div>
         );

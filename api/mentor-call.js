@@ -69,10 +69,16 @@ const COMMON_WORD_BLOCKLIST = new Set([
 ]);
 
 // Ekstrak kandidat kode saham dari teks bebas via regex kasar (cari semua kata 4
-// huruf kapital), buang yang ada di blocklist kata umum. Ini TIDAK divalidasi di sini
-// — union-kan dengan hasil Groq dulu, baru validasi bersama di pemanggil.
+// huruf yang SUDAH tertulis kapital SEMUA di teks asli — bukan di-uppercase dulu),
+// buang yang ada di blocklist kata umum. TIDAK memanggil text.toUpperCase() di sini
+// — itu bug yang bikin kata biasa Title-Case seperti "Jawa", "Naik", "Laba" (huruf
+// pertama kapital karena awal kalimat/nama tempat, sisanya huruf kecil) ikut
+// ter-uppercase jadi "JAWA"/"NAIK"/"LABA" dan salah kena tangkap sebagai kode saham
+// begitu kebetulan cocok dengan kode ticker resmi. Kode saham asli yang mentor
+// maksud memang selalu ditulis FULL CAPS ("MIKA"), jadi mempertahankan case asli
+// adalah sinyal pembeda yang penting, bukan cuma detail kecil.
 function extractCandidatesRegex(text) {
-  const candidates = text.toUpperCase().match(/\b[A-Z]{4}\b/g) || [];
+  const candidates = text.match(/\b[A-Z]{4}\b/g) || [];
   return [...new Set(candidates)].filter((c) => !COMMON_WORD_BLOCKLIST.has(c));
 }
 
@@ -252,12 +258,40 @@ async function extractStockCodes(text, validCodes) {
   const validated = merged.filter((code) => validCodes.has(code));
   const boldCodes = boldCodesRaw.filter((code) => validCodes.has(code));
 
+  // Untuk tiap kode, simpan teks ASLI yang jadi rujukan (kode itu sendiri, atau
+  // nama perusahaan dari **bold** yang di-mapping ke kode ini) — dipakai untuk
+  // mencari kalimat konteks yang BENAR per kode, bukan snippet global yang sama
+  // untuk semua kode (bug sebelumnya: semua kartu watchlist dari satu pesan
+  // menampilkan cuplikan kalimat pertama yang sama persis, padahal tiap kode
+  // biasanya disebut di kalimat berbeda).
+  const codeSourceText = {};
+  for (const m of nameMapping.mappings) {
+    const code = (m.code || "").toUpperCase();
+    if (code && !codeSourceText[code]) codeSourceText[code] = m.name;
+  }
+  for (const code of validated) {
+    if (!codeSourceText[code]) codeSourceText[code] = code;
+  }
+
   return {
     codes: validated,
     boldCodes, // subset dari `codes` yang berasal dari penandaan **bold** mentor
+    codeSourceText,
     groqUsed: !groqResult.skipped,
     groqSkipReason: groqResult.skipped ? groqResult.reason : undefined,
   };
+}
+
+// Cari kalimat (dipisah oleh . ! ? atau baris baru) yang benar-benar menyebut
+// `sourceText` (kode atau nama perusahaan asalnya) — supaya konteks yang
+// ditampilkan/disimpan sebagai notes per kode relevan dengan kode itu, bukan
+// selalu kalimat pertama pesan.
+function buildCodeContext(text, code, sourceText) {
+  const sentences = text.split(/(?<=[.!?\n])\s+/).filter(Boolean);
+  const escaped = sourceText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`\\b${escaped}\\b`, "i");
+  const hit = sentences.find((s) => pattern.test(s)) || sentences.find((s) => new RegExp(`\\b${code}\\b`, "i").test(s));
+  return (hit || text).trim().slice(0, 200);
 }
 
 async function crossCheckWithScanHistory(supabase, codes) {
@@ -465,11 +499,19 @@ export default async function handler(req, res) {
     const scanCrossCheck = await crossCheckWithScanHistory(supabase, detectedCodes);
     const pastMentions = await findPastMentorMentions(supabase, detectedCodes);
 
+    // Konteks per kode — kalimat yang benar-benar menyebut kode/nama itu, BUKAN
+    // cuplikan kalimat pertama pesan yang sama untuk semua kode (bug sebelumnya).
+    const codeContext = {};
+    for (const code of detectedCodes) {
+      codeContext[code] = buildCodeContext(message, code, extraction.codeSourceText[code] || code);
+    }
+
     res.status(200).json({
       savedCallId: savedRow.id,
       receivedAt: savedRow.received_at,
       detectedCodes,
       boldCodes: extraction.boldCodes, // kode yang mentor tandai tegas dengan **bold**
+      codeContext, // per kode: kalimat konteks yang relevan (dipakai sebagai notes watchlist)
       groqUsed: extraction.groqUsed,
       groqSkipReason: extraction.groqSkipReason,
       scanCrossCheck, // per kode: histori scan_results dalam LOOKBACK_DAYS_FOR_CROSSCHECK hari
