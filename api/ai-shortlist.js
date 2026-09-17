@@ -10,6 +10,14 @@
 // yang sudah dihitung deterministik di server, sama prinsipnya dengan
 // api/technical-analysis.js.
 //
+// Setelah Groq memilih kandidat (biasanya 5-15 dari puluhan/ratusan hasil
+// scan), untuk KANDIDAT ITU SAJA (bukan semua hasil scan) di-fetch data
+// candle historis dan dihitung support/resistance (persis logika di
+// api/technical-analysis.js) — supaya bisa langsung kasih area beli, area
+// jual, dan stop-loss dalam SATU respons, tanpa User harus buka tab Chart
+// manual satu-satu. Tetap cepat karena cuma dihitung untuk saham yang
+// benar-benar terpilih, bukan seluruh hasil scan.
+//
 // POST body: { rows: [{ code, volumeRatio, value, priceChangePct,
 //   volRatio3v20?, priceChange3d?, sector?, subsector? }, ...] }
 // (rows = hasil scan yang SEDANG ditampilkan di browser, tidak difetch ulang)
@@ -57,6 +65,82 @@ async function getIntradaySnapshot(code) {
     return { code, freq: Number(d.freq) || null, spreadPct, imbalance };
   } catch (e) {
     return { code, freq: null, spreadPct: null, imbalance: null };
+  }
+}
+
+function ymd(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// Sama persis dengan findSupportResistance di api/technical-analysis.js —
+// swing high/low dari 80 candle terakhir, ambil level terdekat dari harga
+// sekarang. Diduplikasi (bukan di-import) karena masing-masing api/*.js di
+// Vercel adalah function terpisah — pola yang sama juga dipakai di file lain.
+function findSupportResistance(candles, currentPrice, lookback = 3) {
+  const window = candles.slice(-80);
+  const swingHighs = [];
+  const swingLows = [];
+
+  for (let i = lookback; i < window.length - lookback; i++) {
+    const slice = window.slice(i - lookback, i + lookback + 1);
+    const current = window[i];
+    if (current.high === Math.max(...slice.map((c) => c.high))) swingHighs.push(current.high);
+    if (current.low === Math.min(...slice.map((c) => c.low))) swingLows.push(current.low);
+  }
+
+  const resistances = [...new Set(swingHighs)].filter((h) => h > currentPrice).sort((a, b) => a - b);
+  const supports = [...new Set(swingLows)].filter((l) => l < currentPrice).sort((a, b) => b - a);
+
+  return {
+    nearestSupport: supports[0] ?? null,
+    nearestSupport2: supports[1] ?? null,
+    nearestResistance: resistances[0] ?? null,
+    nearestResistance2: resistances[1] ?? null,
+  };
+}
+
+// Ambil area beli/jual/stop-loss dari support/resistance saham TERPILIH saja.
+// - Area beli: sekitar support terdekat (support s/d support+2%)
+// - Area jual/target: sekitar resistance terdekat (resistance-2% s/d resistance,
+//   pakai resistance kedua sebagai target lanjutan kalau ada)
+// - Stop-loss: sedikit di bawah support (support-6% s/d support-3%) — tempat
+//   tesis "dijaga di atas support" dinyatakan gagal
+async function getTradeLevels(code) {
+  const to = new Date();
+  const from = new Date(to.getTime() - 120 * 24 * 60 * 60 * 1000); // ~80+ hari perdagangan
+
+  try {
+    const resp = await fetch(
+      `${INVEZGO_BASE_URL}/analysis/chart/stock/${code}?from=${ymd(from)}&to=${ymd(to)}`,
+      { headers: { Authorization: `Bearer ${API_KEY}` } }
+    );
+    if (!resp.ok) return null;
+
+    const raw = await resp.json();
+    if (!Array.isArray(raw) || raw.length < 20) return null;
+
+    const candles = [...raw]
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+      .map((c) => ({ high: Number(c.high), low: Number(c.low), close: Number(c.close) }));
+
+    const currentPrice = candles[candles.length - 1].close;
+    const { nearestSupport, nearestResistance, nearestResistance2 } = findSupportResistance(candles, currentPrice);
+
+    if (!nearestSupport || !nearestResistance) return null;
+
+    const round = (n) => Math.round(n);
+    const target = nearestResistance2 || nearestResistance * 1.05;
+
+    return {
+      buyLow: round(nearestSupport),
+      buyHigh: round(nearestSupport * 1.02),
+      sellLow: round(nearestResistance * 0.98),
+      sellHigh: round(target),
+      stopLossLow: round(nearestSupport * 0.94),
+      stopLossHigh: round(nearestSupport * 0.97),
+    };
+  } catch (e) {
+    return null;
   }
 }
 
@@ -137,7 +221,7 @@ async function askGroq(enrichedRows) {
 }
 
 export const config = {
-  maxDuration: 45,
+  maxDuration: 60,
 };
 
 export default async function handler(req, res) {
@@ -188,10 +272,24 @@ export default async function handler(req, res) {
 
   const groqResult = await askGroq(enrichedRows);
 
+  // Hanya untuk saham yang BENAR-BENAR terpilih (biasanya 5-15) — bukan semua
+  // hasil scan — supaya tetap cepat berapa pun banyaknya saham yang di-scan.
+  const tradeLevelsList = await runPool(
+    groqResult.picks.map((p) => p.code),
+    CONCURRENCY,
+    getTradeLevels
+  );
+  const tradeLevelsByCode = new Map(groqResult.picks.map((p, i) => [p.code, tradeLevelsList[i]]));
+
+  const picksWithLevels = groqResult.picks.map((p) => ({
+    ...p,
+    levels: tradeLevelsByCode.get(p.code) || null, // null kalau data candle tidak cukup
+  }));
+
   res.setHeader("Cache-Control", "no-store");
   res.status(200).json({
     enrichedRows,
-    picks: groqResult.picks,
+    picks: picksWithLevels,
     groqUsed: !groqResult.skipped,
     groqSkipReason: groqResult.skipped ? groqResult.reason : undefined,
   });

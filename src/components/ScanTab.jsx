@@ -454,12 +454,27 @@ export default function ScanTab() {
 
           {aiPicks.length > 0 && (
             <div className="card">
-              <h2>🌟 Pilihan AI ({aiPicks.length})</h2>
+              <h2>🌟 Rekomendasi AI ({aiPicks.length})</h2>
               {aiPicks.map((p) => (
                 <div className="mentor-code-block" key={p.code}>
                   <div className="mentor-code-head">
-                    <span className="code-tag">{p.code}</span>
+                    <span className="code-tag" style={{ fontSize: 15 }}>{p.code}</span>
                   </div>
+                  {p.levels ? (
+                    <div className="insight-box" style={{ marginBottom: 10 }}>
+                      <b>Rekomendasi AI: Saham Pilihan → {p.code}</b>
+                      <br />
+                      Beli di {p.levels.buyLow}-{p.levels.buyHigh}
+                      <br />
+                      Jual di {p.levels.sellLow}-{p.levels.sellHigh}
+                      <br />
+                      Stop Loss {p.levels.stopLossLow}-{p.levels.stopLossHigh}
+                    </div>
+                  ) : (
+                    <div className="sub" style={{ marginBottom: 10 }}>
+                      ⚠ Data candle {p.code} belum cukup untuk hitung area beli/jual/stop-loss.
+                    </div>
+                  )}
                   <div className="cross-hit">✓ {p.reason}</div>
                   <div className="cross-miss">⚠ {p.risk}</div>
                 </div>

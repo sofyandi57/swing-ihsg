@@ -27,7 +27,7 @@
       "maxDuration": 30
     },
     "api/ai-shortlist.js": {
-      "maxDuration": 45
+      "maxDuration": 60
     }
   }
 }
