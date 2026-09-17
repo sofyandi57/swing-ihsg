@@ -11,7 +11,7 @@ function CodeCheckResult({ code }) {
     setStatus("loading");
     setError("");
     try {
-      const resp = await authFetch(`/api/check-stock?code=${encodeURIComponent(code)}`);
+      const resp = await authFetch(`/api/mentor-call?action=check-stock&code=${encodeURIComponent(code)}`);
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
       setResult(json.result);
