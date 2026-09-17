@@ -38,8 +38,8 @@
   },
   "crons": [
     {
-      "path": "/api/admin?resource=quota-flush",
-      "schedule": "0 18 * * *"
+      "path": "/api/screener?mode=ara_hunter",
+      "schedule": "1 2 * * *"
     },
     {
       "path": "/api/screener?mode=momentum_sniper",

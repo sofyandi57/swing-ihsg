@@ -12,6 +12,12 @@ const CRITERIA = [
     label: "Momentum Sniper (BPJP/BPJS/BSJP)",
     desc: "Percepatan frekuensi transaksi + ticket size + volume + harga. Top 5-15 kandidat, diklasifikasi per strategi.",
   },
+  {
+    id: "ara_hunter",
+    icon: "🚀",
+    label: "ARA Hunter",
+    desc: "Kandidat Auto Reject Atas sedini mungkin setelah bursa buka — kombinasi info sektor, volume/value breakout, frekuensi, dan tape reading bid/offer. Otomatis jalan tiap pagi jam 09:01 WIB.",
+  },
 ];
 
 const SORT_FIELDS_BY_MODE = {
@@ -41,6 +47,12 @@ const SORT_FIELDS_BY_MODE = {
   momentum_sniper: [
     { id: "humanSpeedScore", label: "Human-Speed Score" },
     { id: "frequencyRatio", label: "Rasio Frekuensi" },
+    { id: "value", label: "Value" },
+  ],
+  ara_hunter: [
+    { id: "araScore", label: "ARA Score" },
+    { id: "priceChangePct", label: "Change %" },
+    { id: "bidOfferRatio", label: "Rasio Bid/Offer" },
     { id: "value", label: "Value" },
   ],
 };
@@ -270,6 +282,58 @@ function MomentumSniperCard({ row }) {
   );
 }
 
+// Kartu ARA Hunter — 4 sinyal yang diminta User: info (sektor), volume/value
+// breakout, frekuensi, dan tape reading bid/offer. Skor komposit ditampilkan
+// paling menonjol supaya urutan prioritas kandidat langsung kelihatan.
+function AraHunterCard({ row }) {
+  const notes =
+    `ARA Hunter — ARA Score ${row.araScore.toFixed(1)}, harga +${row.priceChangePct.toFixed(2)}% dari kemarin, ` +
+    `freq ${formatNumber(row.freq)}, value ${formatCompact(row.value)}, ` +
+    `bid/offer ${row.bidOfferRatio != null ? row.bidOfferRatio.toFixed(2) + "x" : "n/a"}.`;
+
+  return (
+    <div className="result-card">
+      <div className="result-card-top">
+        <span className="result-code">{row.code}</span>
+        <span className="ratio-pill" title="Skor komposit 4 sinyal (info+volume+frekuensi+bid/offer)">
+          ARA {row.araScore.toFixed(0)}
+        </span>
+      </div>
+
+      <div className="sub" style={{ marginBottom: 8 }}>
+        {row.sector || "Sektor tidak diketahui"} · Harga {formatNumber(row.price)} (+{row.priceChangePct.toFixed(2)}%)
+      </div>
+
+      <div className="result-grid">
+        <div className="result-metric">
+          <span className="result-metric-label">Value</span>
+          <span className="result-metric-value">{formatCompact(row.value)}</span>
+        </div>
+        <div className="result-metric">
+          <span className="result-metric-label">Frekuensi</span>
+          <span className="result-metric-value">{formatNumber(row.freq)}</span>
+        </div>
+        <div className="result-metric">
+          <span className="result-metric-label">Bid/Offer (Tape)</span>
+          <span className="result-metric-value">
+            {row.bidOfferRatio != null ? `${row.bidOfferRatio.toFixed(2)}x` : "—"}
+          </span>
+        </div>
+      </div>
+
+      {row.bidOfferRatio === null && (
+        <div className="cross-miss" style={{ marginTop: 8 }}>
+          ⚠ Order book tidak tersedia untuk kode ini — skor dihitung tanpa sinyal bid/offer.
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        <AddToWatchlistButton code={row.code} notes={notes} />
+      </div>
+    </div>
+  );
+}
+
 export default function ScanTab() {
   const [criteriaMode, setCriteriaMode] = useState(null); // null = pilih kriteria dulu
 
@@ -452,6 +516,7 @@ export default function ScanTab() {
   const canRun =
     criteriaMode === "global" ||
     criteriaMode === "momentum_sniper" ||
+    criteriaMode === "ara_hunter" ||
     (criteriaMode === "sektor" && selectedSector) ||
     (criteriaMode === "value" && (useSpecialIf2x || minValue)) ||
     (criteriaMode === "volume_spike" && minRatio);
@@ -725,11 +790,15 @@ export default function ScanTab() {
           )}
 
           <div className="result-list">
-            {(meta?.mode || criteriaMode) === "momentum_sniper"
-              ? sortedResults.map((row) => <MomentumSniperCard key={row.code} row={row} />)
-              : sortedResults.map((row) => (
-                  <ResultCard key={row.code} row={row} mode={meta?.mode || criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
-                ))}
+            {(meta?.mode || criteriaMode) === "momentum_sniper" ? (
+              sortedResults.map((row) => <MomentumSniperCard key={row.code} row={row} />)
+            ) : (meta?.mode || criteriaMode) === "ara_hunter" ? (
+              sortedResults.map((row) => <AraHunterCard key={row.code} row={row} />)
+            ) : (
+              sortedResults.map((row) => (
+                <ResultCard key={row.code} row={row} mode={meta?.mode || criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
+              ))
+            )}
           </div>
         </>
       )}

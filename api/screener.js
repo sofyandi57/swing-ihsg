@@ -361,6 +361,135 @@ function average(nums) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
+// Stage 1 murah untuk ARA Hunter — HANYA /batch/intraday-data (harga+volume+
+// freq+value hari ini), TANPA order book (itu Stage 2, cuma untuk shortlist).
+// Dipakai untuk seluruh universe (~90 chunk untuk ~900 kode), beda dari
+// getIntradaySnapshotsBatch (dipakai Momentum Sniper) yang SEKALIGUS fetch
+// order book untuk semua kode yang diberikan — kalau dipakai untuk universe
+// penuh itu 2x lebih mahal dari yang dibutuhkan ARA Hunter di Stage 1.
+async function getIntradayPriceSnapshotsBatch(codes) {
+  const map = new Map();
+  for (const group of chunkArray(codes, BATCH_SIZE)) {
+    try {
+      const results = await invezgoGet(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
+      if (Array.isArray(results)) for (const r of results) map.set(r.code, r);
+    } catch (e) {
+      // skip chunk ini, lanjut chunk berikutnya
+    }
+  }
+  return map;
+}
+
+async function getOrderBookBatch(codes) {
+  const map = new Map();
+  for (const group of chunkArray(codes, BATCH_SIZE)) {
+    try {
+      const results = await invezgoGet(`/batch/order-book/${group.join("|")}`, { market: "RG" });
+      if (Array.isArray(results)) for (const r of results) map.set(r.code, r);
+    } catch (e) {
+      // skip chunk ini, lanjut chunk berikutnya
+    }
+  }
+  return map;
+}
+
+// ARA Hunter — cari kandidat "Auto Reject Atas" (batas kenaikan harga harian)
+// SEDINI mungkin setelah bursa buka (dirancang jalan ~09:01 WIB via cron,
+// lihat vercel.json), pakai 4 sinyal yang diminta User:
+//   1. Info    — sektor (dari daftar saham resmi, gratis)
+//   2. Volume  — value transaksi hari ini (proxy "volume breakout" sedini
+//                mungkin — belum ada baseline volume harian di menit
+//                pertama, jadi dipakai VALUE bukan rasio vs kemarin)
+//   3. Frequency — jumlah transaksi hari ini (banyak partisipan ikut,
+//                  bukan cuma satu order nyasar)
+//   4. Bid/Offer — rasio lot bid vs offer level 1 (tape reading proxy —
+//                  offer menipis relatif ke bid = sedikit resistance jual,
+//                  pola klasik menuju ARA)
+// JUJUR: Invezgo TIDAK punya endpoint "deteksi ARA" resmi (butuh tabel batas
+// auto-reject per rentang harga yang tidak tersedia di API ini) — ini
+// heuristik dari 4 sinyal mentah di atas, BUKAN prediksi bergaransi. Kode
+// warrant/rights (-W/-R) dikecualikan karena pergerakannya turunan saham
+// induk, bukan sinyal ARA mandiri.
+async function runAraHunterScan() {
+  const stockList = await getStockListCached();
+  const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
+  const codes = stockList.map((s) => s.code).filter((c) => !/-(W|R)\d*$/.test(c));
+
+  const snapMap = await getIntradayPriceSnapshotsBatch(codes);
+
+  const all = codes
+    .map((code) => {
+      const d = snapMap.get(code);
+      if (!d) return null;
+      const close = Number(d.close);
+      const prev = Number(d.prev);
+      const open = Number(d.open);
+      const volume = Number(d.volume);
+      const freq = Number(d.freq);
+      const value = Number(d.value);
+      if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(close)) return null;
+      return {
+        code,
+        sector: sectorByCode.get(code) || null,
+        price: close,
+        prevPrice: prev,
+        open: Number.isFinite(open) ? open : null,
+        priceChangePct: ((close - prev) / prev) * 100,
+        volume: Number.isFinite(volume) ? volume : 0,
+        prevVolume: null,
+        volumeRatio: null,
+        freq: Number.isFinite(freq) ? freq : 0,
+        value: Number.isFinite(value) ? value : 0,
+      };
+    })
+    .filter(Boolean);
+
+  // STAGE 1 gate — kandidat ARA realistis: harga sudah bergerak naik cukup
+  // signifikan sedini ini, candle hijau (close > open, bukan spike lalu
+  // turun), likuiditas minimal (value + freq) supaya bukan 1 lot nyasar.
+  let stage1 = all.filter(
+    (r) => r.priceChangePct >= 5 && r.open !== null && r.price > r.open && r.value >= 20_000_000 && r.freq >= 5
+  );
+
+  // Spek User: HARUS minimal 10 kandidat tampil. Kalau gate ketat di atas
+  // menghasilkan kurang dari 10 (hari sepi/market lesu), longgarkan gate
+  // TANPA menghilangkan syarat dasar (candle hijau, ada transaksi) — supaya
+  // tetap ada isi, bukan mengarang kandidat yang tidak punya dasar sama
+  // sekali.
+  if (stage1.length < 10) {
+    stage1 = all.filter((r) => r.open !== null && r.price > r.open && r.priceChangePct > 0 && r.freq >= 1);
+  }
+
+  const stage1Ranked = [...stage1].sort((a, b) => b.priceChangePct - a.priceChangePct).slice(0, 40);
+
+  // STAGE 2 — order book (sinyal ke-4) HANYA untuk shortlist di atas, bukan
+  // seluruh universe (jauh lebih hemat kuota).
+  const bookMap = await getOrderBookBatch(stage1Ranked.map((r) => r.code));
+  stage1Ranked.forEach((r) => {
+    const book = bookMap.get(r.code);
+    const bidLot = Number(book?.bid?.[0]?.bid1lot);
+    const offerLot = Number(book?.offer?.[0]?.offer1lot);
+    r.bidLot = Number.isFinite(bidLot) ? bidLot : null;
+    r.offerLot = Number.isFinite(offerLot) ? offerLot : null;
+    r.bidOfferRatio = Number.isFinite(bidLot) && Number.isFinite(offerLot) && offerLot > 0 ? bidLot / offerLot : null;
+  });
+
+  // Skor komposit 4 sinyal — dinormalisasi kasar (cap tiap komponen) supaya
+  // tidak ada satu sinyal mendominasi cuma karena skalanya lebih besar
+  // (value dalam rupiah vs priceChangePct dalam persen, dsb).
+  stage1Ranked.forEach((r) => {
+    const priceScore = Math.min(r.priceChangePct, 35);
+    const freqScore = Math.min(r.freq / 10, 30);
+    const valueScore = Math.min(r.value / 100_000_000, 30);
+    const bidOfferScore = r.bidOfferRatio !== null ? Math.min(r.bidOfferRatio * 5, 30) : 0;
+    r.araScore = priceScore + freqScore + valueScore + bidOfferScore;
+  });
+
+  const matched = [...stage1Ranked].sort((a, b) => b.araScore - a.araScore).slice(0, 15);
+
+  return { all, matched, totalScanned: all.length };
+}
+
 // Fetch mentah + retry 429 — dipisah dari perhitungan supaya bisa dipakai
 // ULANG untuk fetch "murah" (10 hari) MAUPUN fetch "mahal" (40 hari) tanpa
 // duplikasi logic retry. Lihat getDailyMetrics/getExtendedMetrics di bawah
@@ -913,8 +1042,9 @@ export default async function handler(req, res) {
 
   const authHeader = req.headers.authorization || "";
   const isCronBsjp = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}` && mode === "momentum_sniper";
+  const isCronAraHunter = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}` && mode === "ara_hunter";
 
-  if (!isCronBsjp) {
+  if (!isCronBsjp && !isCronAraHunter) {
     const user = await requireUser(req, res);
     if (!user) return;
   }
@@ -926,7 +1056,7 @@ export default async function handler(req, res) {
 
   await loadSettingsOverrides();
 
-  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x", "momentum_sniper"]);
+  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x", "momentum_sniper", "ara_hunter"]);
   if (!VALID_MODES.has(mode)) {
     res.status(400).json({ error: `mode '${mode}' tidak valid. Pilihan: ${[...VALID_MODES].join(", ")}.` });
     return;
@@ -959,7 +1089,8 @@ export default async function handler(req, res) {
     // "momentum_sniper" juga TIDAK pakai cache — datanya live (freq/order book
     // detik-ke-detik), sengaja selalu fresh tiap dijalankan (spek: "on-demand,
     // not continuously polling").
-    const supabaseForCache = mode === "special_if2x" || mode === "momentum_sniper" ? null : getSupabaseAdmin();
+    const supabaseForCache =
+      mode === "special_if2x" || mode === "momentum_sniper" || mode === "ara_hunter" ? null : getSupabaseAdmin();
     if (supabaseForCache) {
       const cached = await findCachedRun(supabaseForCache, criteria);
       if (cached) {
@@ -979,13 +1110,16 @@ export default async function handler(req, res) {
       }
     }
 
-    const { all, matched: stage1Matched, totalScanned } = await runScan({
-      mode,
-      sector: req.query?.sector,
-      subsector: req.query?.subsector,
-      minValue: req.query?.minValue,
-      minRatio: req.query?.minRatio,
-    });
+    const { all, matched: stage1Matched, totalScanned } =
+      mode === "ara_hunter"
+        ? await runAraHunterScan()
+        : await runScan({
+            mode,
+            sector: req.query?.sector,
+            subsector: req.query?.subsector,
+            minValue: req.query?.minValue,
+            minRatio: req.query?.minRatio,
+          });
 
     // Momentum Sniper: stage1Matched di atas baru top-50 KANDIDAT (stage 1 —
     // liquidity gate murah, EOD). Deep analysis (freq/order book live, per

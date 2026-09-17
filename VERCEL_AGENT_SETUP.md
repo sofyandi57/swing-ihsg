@@ -92,14 +92,14 @@ isi dengan placeholder atau string kosong.
    muncul dengan section "Flush Kuota API" — ini konfirmasi env var lengkap
    sampai `CRON_SECRET`.
 
-## 6. Vercel Cron — "Flush Kuota API" + "Momentum Sniper BSJP Sore"
+## 6. Vercel Cron — "ARA Hunter Pagi" + "Momentum Sniper BSJP Sore"
 
 Project ini **PUNYA DUA cron job** (bukan lagi murni run-on-demand seperti
 versi awal) — dikonfigurasi di `vercel.json` bagian `"crons"`:
 
 | Path | Jadwal (UTC) | WIB | Fungsi |
 |---|---|---|---|
-| `/api/admin?resource=quota-flush` | `0 18 * * *` | 01:00 | Tarik banyak dimensi data saham untuk exhaust/simpan kuota. |
+| `/api/screener?mode=ara_hunter` | `1 2 * * *` | 09:01 | Cari kandidat ARA (Auto Reject Atas) sedini mungkin setelah bursa buka — kombinasi sektor, volume/value breakout, frekuensi, dan tape reading bid/offer. Minimal 10 kandidat (spek User), hasil tersimpan ke `scan_runs`/`scan_results` seperti scan manual biasa. **Ini MENGGANTIKAN cron "Flush Kuota API" yang sebelumnya ada di slot ini** — User eksplisit minta diganti (flush kuota sekarang PURE manual via tombol Admin panel, tidak ada cron-nya lagi). |
 | `/api/screener?mode=momentum_sniper` | `0 8 * * *` | 15:00 | Jalankan scan Momentum Sniper otomatis di awal window BSJP (15:00-16:00 WIB) — hasil (kalau ada kandidat BSJP lolos) tersimpan ke `scan_runs`/`scan_results` seperti scan manual biasa, jadi User tinggal buka tab Run Scan/histori paginya besok tanpa perlu klik scan sendiri jam segitu. |
 
 **PENTING — batas 2 cron job di paket Hobby**: paket Hobby Vercel membatasi
@@ -119,12 +119,14 @@ konfigurasi).
    `Authorization: Bearer <CRON_SECRET>`. Kalau env var ini belum diset, KEDUA
    cron akan selalu gagal (401/403) meski terdaftar dan terjadwal benar — cek
    log invocation di tab **Cron Jobs** kalau ada laporan "cron gagal".
-   - Di `api/admin.js`, bypass ini berlaku untuk SEMUA action resource
-     `quota-flush`.
    - Di `api/screener.js`, bypass ini SENGAJA hanya berlaku untuk
-     `mode=momentum_sniper` — permintaan cron-secret ke mode lain (`global`,
-     `value`, dst) akan tetap ditolak 401 karena butuh sesi user asli. Ini
-     bukan bug.
+     `mode=momentum_sniper` DAN `mode=ara_hunter` — permintaan cron-secret ke
+     mode lain (`global`, `value`, dst) akan tetap ditolak 401 karena butuh
+     sesi user asli. Ini bukan bug.
+   - `CRON_SECRET` juga masih dipakai resource `quota-flush` di `api/admin.js`
+     (untuk klik manual dari cron eksternal seperti cron-job.org kalau User
+     pakai itu — lihat Section 3), TAPI TIDAK ADA cron Vercel bawaan untuk
+     resource ini lagi sejak slot pertama diganti `ara_hunter` di atas.
 3. Selain dua cron di atas, TIDAK ada polling/cron lain di project ini untuk
    fitur apa pun (scan manual mode lain, mentor, chatbot, dst tetap
    run-on-demand murni, tombol manual).
