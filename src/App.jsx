@@ -4,7 +4,6 @@ import MentorTab from "./components/MentorTab.jsx";
 import WatchlistTab from "./components/WatchlistTab.jsx";
 import ChartTab from "./components/ChartTab.jsx";
 import DashboardTab from "./components/DashboardTab.jsx";
-import ChatTab from "./components/ChatTab.jsx";
 import AdminTab from "./components/AdminTab.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import { supabase, authFetch, isSupabaseConfigured } from "./lib/supabaseClient.js";
@@ -15,7 +14,6 @@ const BASE_TABS = [
   { id: "dashboard", label: "Dashboard", icon: "🧭" },
   { id: "mentor", label: "Mentor", icon: "💬" },
   { id: "watchlist", label: "Watchlist", icon: "⭐" },
-  { id: "chat", label: "Chat", icon: "🤖" },
 ];
 
 export default function App() {
@@ -104,9 +102,6 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === "watchlist" ? "block" : "none" }}>
           <WatchlistTab />
-        </div>
-        <div style={{ display: activeTab === "chat" ? "block" : "none" }}>
-          <ChatTab />
         </div>
         {isAdmin && (
           <div style={{ display: activeTab === "admin" ? "block" : "none" }}>

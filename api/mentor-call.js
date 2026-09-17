@@ -3,6 +3,9 @@
 // kode saham yang disebut, cross-check dengan histori scan Invezgo di Supabase, dan
 // simpan pesan ini sebagai histori (mentor_calls) supaya arah sebaliknya juga bisa
 // dicek nanti: "saham X di hasil scan hari ini, pernah disebut mentor kapan?".
+// Kode yang terdeteksi JUGA di-upsert ke watchlist (source: "mentor_call") —
+// sebelumnya cross-check ini hanya membaca histori, tidak pernah menulis ke
+// watchlist, beda dengan alur PDF (api/pdf-watchlist.js) yang sejak awal begitu.
 //
 // POST body: { message: "teks pesan mentor" }
 // GET (tanpa body): kembalikan mentor_calls terbaru, untuk ditampilkan di UI
@@ -246,6 +249,26 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Upsert ke watchlist — SEBELUMNYA cross-check cuma baca histori scan,
+    // tidak pernah menulis kode yang terdeteksi ke watchlist (beda dengan
+    // pdf-watchlist.js yang sejak awal sudah begitu). Sekarang disamakan:
+    // kode yang terdeteksi dari pesan mentor otomatis masuk watchlist juga,
+    // ON CONFLICT (code) DO UPDATE — tidak duplikat kalau kode yang sama
+    // sudah ada dari sumber lain (PDF/manual).
+    let watchlistError = null;
+    if (detectedCodes.length > 0) {
+      const notesSnippet = message.trim().slice(0, 200);
+      const watchlistRows = detectedCodes.map((code) => ({
+        code,
+        updated_at: savedRow.received_at,
+        source: "mentor_call",
+        source_ref_id: savedRow.id,
+        notes: notesSnippet,
+      }));
+      const { error: upsertErr } = await supabase.from("watchlist").upsert(watchlistRows, { onConflict: "code" });
+      if (upsertErr) watchlistError = upsertErr.message;
+    }
+
     const scanCrossCheck = await crossCheckWithScanHistory(supabase, detectedCodes);
     const pastMentions = await findPastMentorMentions(supabase, detectedCodes);
 
@@ -257,6 +280,8 @@ export default async function handler(req, res) {
       groqSkipReason: extraction.groqSkipReason,
       scanCrossCheck, // per kode: histori scan_results dalam LOOKBACK_DAYS_FOR_CROSSCHECK hari
       pastMentions, // per kode: kapan saja mentor pernah sebut kode ini sebelumnya
+      addedToWatchlist: detectedCodes.length > 0 && !watchlistError,
+      watchlistError,
     });
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { authFetch } from "../lib/supabaseClient.js";
+import ChatTab from "./ChatTab.jsx";
 
 function CodeCheckResult({ code }) {
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
@@ -87,11 +88,18 @@ function CrossCheckResult({ json }) {
           </div>
         );
       })}
+      {json.addedToWatchlist && (
+        <div className="cross-hit">⭐ Semua kode di atas otomatis ditambahkan ke Watchlist.</div>
+      )}
+      {json.watchlistError && (
+        <div className="cross-miss">⚠ Gagal tambah ke watchlist: {json.watchlistError}</div>
+      )}
     </>
   );
 }
 
 export default function MentorTab() {
+  const [subTab, setSubTab] = useState("crosscheck"); // crosscheck | chat
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
@@ -143,6 +151,37 @@ export default function MentorTab() {
 
   return (
     <>
+      <div className="card" style={{ display: "flex", gap: 6 }}>
+        <button
+          className="btn btn-ghost"
+          style={{
+            flex: 1,
+            background: subTab === "crosscheck" ? "var(--accent-bg)" : "var(--panel-2)",
+            color: subTab === "crosscheck" ? "var(--accent)" : "var(--text)",
+            borderColor: subTab === "crosscheck" ? "var(--accent)" : "var(--border)",
+          }}
+          onClick={() => setSubTab("crosscheck")}
+        >
+          💬 Cross-Check
+        </button>
+        <button
+          className="btn btn-ghost"
+          style={{
+            flex: 1,
+            background: subTab === "chat" ? "var(--accent-bg)" : "var(--panel-2)",
+            color: subTab === "chat" ? "var(--accent)" : "var(--text)",
+            borderColor: subTab === "chat" ? "var(--accent)" : "var(--border)",
+          }}
+          onClick={() => setSubTab("chat")}
+        >
+          🤖 Chat Asisten
+        </button>
+      </div>
+
+      {subTab === "chat" && <ChatTab />}
+
+      {subTab === "crosscheck" && (
+        <>
       <div className="card">
         <h2>💬 Cross-Check Pesan Mentor</h2>
         <p className="sub">
@@ -197,6 +236,8 @@ export default function MentorTab() {
           </div>
         )}
       </div>
+        </>
+      )}
     </>
   );
 }
