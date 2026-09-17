@@ -7,6 +7,9 @@
     },
     "api/scan-insight.js": {
       "maxDuration": 30
+    },
+    "api/pdf-watchlist.js": {
+      "maxDuration": 60
     }
   }
 }
