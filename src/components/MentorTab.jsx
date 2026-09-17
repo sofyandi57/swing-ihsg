@@ -40,8 +40,41 @@ function CodeCheckResult({ code }) {
   );
 }
 
-function CrossCheckResult({ json }) {
-  const { detectedCodes, scanCrossCheck, pastMentions, receivedAt, groqUsed, groqSkipReason } = json;
+function AddToWatchlistButton({ code, notes }) {
+  const [state, setState] = useState("idle"); // idle | loading | added | error
+
+  async function add() {
+    setState("loading");
+    try {
+      const resp = await authFetch("/api/mentor-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add-watchlist", code, notes }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setState("added");
+    } catch (e) {
+      setState("error");
+    }
+  }
+
+  if (state === "added") {
+    return <span className="cross-hit">⭐ Ditambahkan ke Watchlist</span>;
+  }
+
+  return (
+    <button className="btn btn-ghost" onClick={add} disabled={state === "loading"}>
+      {state === "loading" ? "Menambahkan..." : "+ Tambah ke Watchlist"}
+      {state === "error" && " (gagal, coba lagi)"}
+    </button>
+  );
+}
+
+function CrossCheckResult({ json, sourceMessage }) {
+  const { detectedCodes, boldCodes, scanCrossCheck, pastMentions, receivedAt, groqUsed, groqSkipReason } = json;
+  const boldSet = new Set(boldCodes || []);
+  const notesSnippet = (sourceMessage || "").slice(0, 200);
 
   if (detectedCodes.length === 0) {
     return (
@@ -62,11 +95,17 @@ function CrossCheckResult({ json }) {
       {detectedCodes.map((code) => {
         const scanHits = scanCrossCheck[code] || [];
         const mentionHits = (pastMentions[code] || []).filter((m) => m.received_at !== receivedAt);
+        const isBold = boldSet.has(code);
 
         return (
           <div className="mentor-code-block" key={code}>
             <div className="mentor-code-head">
               <span className="code-tag">{code}</span>
+              {isBold && (
+                <span className="sub" style={{ margin: 0 }}>
+                  ✱ ditandai tegas oleh mentor (**bold**)
+                </span>
+              )}
             </div>
             {scanCrossCheck._error ? (
               <div className="cross-miss">⚠ Gagal cek histori scan: {scanCrossCheck._error}</div>
@@ -82,18 +121,13 @@ function CrossCheckResult({ json }) {
             {mentionHits.length > 0 && (
               <div className="cross-hit">🔁 Mentor pernah sebut kode ini {mentionHits.length}x sebelumnya</div>
             )}
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <CodeCheckResult code={code} />
+              <AddToWatchlistButton code={code} notes={notesSnippet} />
             </div>
           </div>
         );
       })}
-      {json.addedToWatchlist && (
-        <div className="cross-hit">⭐ Semua kode di atas otomatis ditambahkan ke Watchlist.</div>
-      )}
-      {json.watchlistError && (
-        <div className="cross-miss">⚠ Gagal tambah ke watchlist: {json.watchlistError}</div>
-      )}
     </>
   );
 }
@@ -139,7 +173,7 @@ export default function MentorTab() {
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
-      setCrossCheckJson(json);
+      setCrossCheckJson({ ...json, sourceMessage: trimmed });
       setMessage("");
       setStatus("done");
       loadHistory();
@@ -204,7 +238,7 @@ export default function MentorTab() {
 
       {crossCheckJson && (
         <div className="card">
-          <CrossCheckResult json={crossCheckJson} />
+          <CrossCheckResult json={crossCheckJson} sourceMessage={crossCheckJson.sourceMessage} />
         </div>
       )}
 

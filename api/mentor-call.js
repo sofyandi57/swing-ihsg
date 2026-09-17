@@ -3,11 +3,20 @@
 // kode saham yang disebut, cross-check dengan histori scan Invezgo di Supabase, dan
 // simpan pesan ini sebagai histori (mentor_calls) supaya arah sebaliknya juga bisa
 // dicek nanti: "saham X di hasil scan hari ini, pernah disebut mentor kapan?".
-// Kode yang terdeteksi JUGA di-upsert ke watchlist (source: "mentor_call") —
-// sebelumnya cross-check ini hanya membaca histori, tidak pernah menulis ke
-// watchlist, beda dengan alur PDF (api/pdf-watchlist.js) yang sejak awal begitu.
+//
+// Mentor menandai nama saham dengan **bold** di WA (misal "**Bank BCA**" atau
+// "**BBCA**") justru untuk menghindari ambigu dengan kata umum ("Laba", "Naik",
+// dst yang kadang tertulis kapital juga). Teks di dalam **...** diperlakukan
+// sebagai SINYAL KUAT nama/kode saham: kalau sudah berupa kode resmi langsung
+// dipakai, kalau berupa nama perusahaan (bukan ticker) di-mapping ke kode lewat
+// Groq, lalu tetap divalidasi ke daftar saham resmi (anti-halusinasi).
+//
+// Watchlist TIDAK auto-ditulis lagi dari cross-check ini — user diberi pilihan
+// per kode via tombol "+ Tambah ke Watchlist" di UI (POST action=add-watchlist),
+// supaya bukan mentor yang menentukan isi watchlist, tapi user yang memilih.
 //
 // POST body: { message: "teks pesan mentor" }
+// POST body: { action: "add-watchlist", code, notes } — tambah SATU kode ke watchlist
 // GET (tanpa body): kembalikan mentor_calls terbaru, untuk ditampilkan di UI
 // GET ?action=check-stock&code=BBCA: cek volume ratio satu saham saja (dipakai
 // tombol "Cek Scan Sekarang" di hasil cross-check) — digabung ke sini (bukan file
@@ -136,19 +145,116 @@ async function extractCandidatesGroq(text) {
   }
 }
 
-// Gabungkan kandidat dari regex+blocklist DAN Groq (union — saling melengkapi, saling
-// menutupi celah masing-masing), lalu validasi SEMUA terhadap daftar saham resmi.
-// Ini langkah yang sebenarnya menentukan apakah kode itu benar-benar ada dan aktif —
-// tidak peduli metode mana yang mengusulkannya.
+// Ekstrak teks di dalam **bold** markdown — mentor menandai nama/kode saham
+// begini justru untuk menghindari ambigu dengan kata umum. Kembalikan teks ASLI
+// di dalamnya (bisa berupa kode "BBCA" atau nama perusahaan "Bank BCA"), belum
+// divalidasi/di-resolve di sini.
+function extractBoldSegments(text) {
+  const matches = [...text.matchAll(/\*\*([^*\n]{2,40})\*\*/g)];
+  const segments = matches.map((m) => m[1].trim()).filter(Boolean);
+  return [...new Set(segments)];
+}
+
+// Mapping nama perusahaan (dari dalam **bold**) ke kode ticker resmi via Groq —
+// dipakai HANYA untuk segmen bold yang bukan sudah berupa kode 4 huruf kapital.
+// PENTING: hasil mapping ini tetap divalidasi ke daftar saham resmi oleh pemanggil,
+// sama seperti sumber lain — Groq bisa saja salah/berhalusinasi kode.
+async function resolveCompanyNamesToCodes(names) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || names.length === 0) return { mappings: [], skipped: true };
+
+  try {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Anda mengubah nama perusahaan tercatat di Bursa Efek Indonesia (IDX/BEI) menjadi kode " +
+              "ticker resminya (4 huruf kapital, contoh: Bank BCA -> BBCA, Astra International -> ASII). " +
+              "Untuk setiap nama di daftar input, kembalikan kode ticker yang paling sesuai. Kalau nama " +
+              "itu SUDAH berupa kode ticker, kembalikan apa adanya (huruf besar). Kalau ragu atau nama " +
+              "tidak dikenali sebagai emiten IDX, kembalikan code: null — jangan mengarang kode.",
+          },
+          { role: "user", content: JSON.stringify(names) },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "company_name_to_ticker",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                mappings: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      code: { type: ["string", "null"] },
+                    },
+                    required: ["name", "code"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ["mappings"],
+              additionalProperties: false,
+            },
+          },
+        },
+      }),
+    });
+
+    if (!resp.ok) return { mappings: [], skipped: true };
+
+    const data = await resp.json();
+    const parsed = JSON.parse(data.choices[0].message.content);
+    return { mappings: parsed.mappings || [], skipped: false };
+  } catch (e) {
+    return { mappings: [], skipped: true };
+  }
+}
+
+// Gabungkan kandidat dari regex+blocklist, Groq (baca kalimat penuh), DAN segmen
+// **bold** (sinyal kuat dari mentor — union semua, saling melengkapi), lalu
+// validasi SEMUA terhadap daftar saham resmi. Ini langkah yang sebenarnya
+// menentukan apakah kode itu benar-benar ada dan aktif — tidak peduli metode
+// mana yang mengusulkannya.
 async function extractStockCodes(text, validCodes) {
   const regexCandidates = extractCandidatesRegex(text);
   const groqResult = await extractCandidatesGroq(text);
 
-  const merged = [...new Set([...regexCandidates, ...groqResult.candidates])];
+  const boldSegments = extractBoldSegments(text);
+  // Segmen bold yang sudah berbentuk kode 4-6 huruf kapital (setelah di-uppercase,
+  // tanpa spasi) langsung jadi kandidat — tidak perlu lewat Groq lagi.
+  const boldDirectCodes = boldSegments
+    .map((s) => s.toUpperCase().replace(/\s+/g, ""))
+    .filter((s) => /^[A-Z]{4,6}$/.test(s));
+  // Sisanya (nama perusahaan, bukan kode) di-mapping via Groq
+  const boldNamesNeedingLookup = boldSegments.filter(
+    (s) => !/^[A-Z]{4,6}$/.test(s.toUpperCase().replace(/\s+/g, ""))
+  );
+  const nameMapping = await resolveCompanyNamesToCodes(boldNamesNeedingLookup);
+  const boldMappedCodes = nameMapping.mappings
+    .map((m) => (m.code || "").toUpperCase())
+    .filter(Boolean);
+  const boldCodesRaw = [...new Set([...boldDirectCodes, ...boldMappedCodes])];
+
+  const merged = [...new Set([...regexCandidates, ...groqResult.candidates, ...boldCodesRaw])];
   const validated = merged.filter((code) => validCodes.has(code));
+  const boldCodes = boldCodesRaw.filter((code) => validCodes.has(code));
 
   return {
     codes: validated,
+    boldCodes, // subset dari `codes` yang berasal dari penandaan **bold** mentor
     groqUsed: !groqResult.skipped,
     groqSkipReason: groqResult.skipped ? groqResult.reason : undefined,
   };
@@ -308,6 +414,30 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Tambah SATU kode ke watchlist atas pilihan eksplisit user (tombol "+ Tambah
+  // ke Watchlist" di hasil cross-check) — menggantikan upsert otomatis semua
+  // kode terdeteksi yang dipakai sebelumnya.
+  if (req.body && req.body.action === "add-watchlist") {
+    const code = (req.body.code || "").toUpperCase().trim();
+    if (!code || !/^[A-Z]{2,6}$/.test(code)) {
+      res.status(400).json({ error: "Kode saham tidak valid." });
+      return;
+    }
+    const notes = (req.body.notes || "").trim().slice(0, 200);
+    const { error: upsertErr } = await supabase
+      .from("watchlist")
+      .upsert(
+        [{ code, updated_at: new Date().toISOString(), source: "mentor_call", notes }],
+        { onConflict: "code" }
+      );
+    if (upsertErr) {
+      res.status(502).json({ error: upsertErr.message });
+      return;
+    }
+    res.status(200).json({ added: true, code });
+    return;
+  }
+
   const message = (req.body && req.body.message) || "";
   if (!message.trim()) {
     res.status(400).json({ error: "Field 'message' kosong." });
@@ -332,26 +462,6 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Upsert ke watchlist — SEBELUMNYA cross-check cuma baca histori scan,
-    // tidak pernah menulis kode yang terdeteksi ke watchlist (beda dengan
-    // pdf-watchlist.js yang sejak awal sudah begitu). Sekarang disamakan:
-    // kode yang terdeteksi dari pesan mentor otomatis masuk watchlist juga,
-    // ON CONFLICT (code) DO UPDATE — tidak duplikat kalau kode yang sama
-    // sudah ada dari sumber lain (PDF/manual).
-    let watchlistError = null;
-    if (detectedCodes.length > 0) {
-      const notesSnippet = message.trim().slice(0, 200);
-      const watchlistRows = detectedCodes.map((code) => ({
-        code,
-        updated_at: savedRow.received_at,
-        source: "mentor_call",
-        source_ref_id: savedRow.id,
-        notes: notesSnippet,
-      }));
-      const { error: upsertErr } = await supabase.from("watchlist").upsert(watchlistRows, { onConflict: "code" });
-      if (upsertErr) watchlistError = upsertErr.message;
-    }
-
     const scanCrossCheck = await crossCheckWithScanHistory(supabase, detectedCodes);
     const pastMentions = await findPastMentorMentions(supabase, detectedCodes);
 
@@ -359,12 +469,11 @@ export default async function handler(req, res) {
       savedCallId: savedRow.id,
       receivedAt: savedRow.received_at,
       detectedCodes,
+      boldCodes: extraction.boldCodes, // kode yang mentor tandai tegas dengan **bold**
       groqUsed: extraction.groqUsed,
       groqSkipReason: extraction.groqSkipReason,
       scanCrossCheck, // per kode: histori scan_results dalam LOOKBACK_DAYS_FOR_CROSSCHECK hari
       pastMentions, // per kode: kapan saja mentor pernah sebut kode ini sebelumnya
-      addedToWatchlist: detectedCodes.length > 0 && !watchlistError,
-      watchlistError,
     });
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
