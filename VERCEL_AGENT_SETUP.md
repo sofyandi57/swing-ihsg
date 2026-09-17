@@ -99,7 +99,7 @@ versi awal) — dikonfigurasi di `vercel.json` bagian `"crons"`:
 
 | Path | Jadwal (UTC) | WIB | Fungsi |
 |---|---|---|---|
-| `/api/admin?resource=quota-flush` | `50 16 * * *` | 23:50 | Tarik banyak dimensi data saham untuk exhaust/simpan kuota. |
+| `/api/admin?resource=quota-flush` | `0 18 * * *` | 01:00 | Tarik banyak dimensi data saham untuk exhaust/simpan kuota. |
 | `/api/screener?mode=momentum_sniper` | `0 8 * * *` | 15:00 | Jalankan scan Momentum Sniper otomatis di awal window BSJP (15:00-16:00 WIB) — hasil (kalau ada kandidat BSJP lolos) tersimpan ke `scan_runs`/`scan_results` seperti scan manual biasa, jadi User tinggal buka tab Run Scan/histori paginya besok tanpa perlu klik scan sendiri jam segitu. |
 
 **PENTING — batas 2 cron job di paket Hobby**: paket Hobby Vercel membatasi

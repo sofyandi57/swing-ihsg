@@ -39,7 +39,7 @@
   "crons": [
     {
       "path": "/api/admin?resource=quota-flush",
-      "schedule": "50 16 * * *"
+      "schedule": "0 18 * * *"
     },
     {
       "path": "/api/screener?mode=momentum_sniper",
