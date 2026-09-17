@@ -5,7 +5,7 @@
 //
 // GET /api/stock-chart?code=BBCA&timeframe=15
 //
-// GET /api/stock-chart?code=BBCA&action=bandarmologi[&lookbackDays=30] — dipakai
+// GET /api/stock-chart?code=BBCA&action=bandarmologi[&lookbackDays=180] — dipakai
 // tab Bandarmologi baru. Gabungan 5 dimensi jejak broker/insider Invezgo untuk
 // SATU kode saham (tidak ada versi Batch untuk endpoint-endpoint ini — lihat
 // INVEZGO_BANDARMOLOGI_RESEARCH.md): Broker Summary Chart (D/F buy-sell),
@@ -90,6 +90,40 @@ function rankBrokersFromInventory(brokerRows) {
     .sort((a, b) => b.netValue - a.netValue);
 }
 
+// Total value gabungan SEMUA broker per bulan (YYYY-MM), dibandingkan
+// dengan pergerakan harga di bulan yang sama — ini yang membedakan fase
+// akumulasi/markup/distribusi/markdown ala Wyckoff dari sekadar "total 6
+// bulan net-nya berapa": broker bisa net-buy di bulan 1-3 (akumulasi) lalu
+// net-sell di bulan 4-6 (distribusi) walau totalnya kelihatan netral.
+function monthlyFlowVsPrice(brokerRows, priceRows) {
+  const flowByMonth = new Map();
+  for (const b of Array.isArray(brokerRows) ? brokerRows : []) {
+    for (const d of Array.isArray(b.data) ? b.data : []) {
+      const month = String(d.date).slice(0, 7);
+      flowByMonth.set(month, (flowByMonth.get(month) || 0) + (Number(d.value) || 0));
+    }
+  }
+
+  const priceByMonth = new Map();
+  for (const p of Array.isArray(priceRows) ? priceRows : []) {
+    const month = String(p.date).slice(0, 7);
+    if (!priceByMonth.has(month)) priceByMonth.set(month, { open: Number(p.close), close: Number(p.close) });
+    priceByMonth.get(month).close = Number(p.close);
+  }
+
+  const months = [...new Set([...flowByMonth.keys(), ...priceByMonth.keys()])].sort();
+  return months.map((month) => ({
+    month,
+    netBrokerValue: flowByMonth.get(month) || 0,
+    priceOpen: priceByMonth.get(month)?.open ?? null,
+    priceClose: priceByMonth.get(month)?.close ?? null,
+    priceChangePct:
+      priceByMonth.get(month)?.open && priceByMonth.get(month)?.close
+        ? Number((((priceByMonth.get(month).close - priceByMonth.get(month).open) / priceByMonth.get(month).open) * 100).toFixed(2))
+        : null,
+  }));
+}
+
 async function handleBandarmologi(req, res) {
   const code = (req.query?.code || "").toUpperCase().trim();
   if (!code || !/^[A-Z0-9]{3,7}$/.test(code)) {
@@ -99,7 +133,12 @@ async function handleBandarmologi(req, res) {
 
   const today = new Date();
   const todayStr = ymd(today);
-  const lookbackDays = Number(req.query?.lookbackDays) || 30;
+  // Default 6 bulan (bukan 30 hari) — rentang pendek tidak cukup untuk baca
+  // fase akumulasi/distribusi/markup/markdown ala Wyckoff, yang butuh
+  // konteks broker berbulan-bulan, bukan cuma sebulan. Endpoint broker/
+  // inventory Invezgo dibatasi 2 tahun untuk tier non-Enterprise (lihat
+  // INVEZGO_BANDARMOLOGI_RESEARCH.md), jadi 180 hari masih jauh di bawahnya.
+  const lookbackDays = Number(req.query?.lookbackDays) || 180;
   const from = ymd(new Date(today.getTime() - lookbackDays * 24 * 60 * 60 * 1000));
 
   const [summary, inventory, sankey, momentum, ownAbove, ownOne, ownInsider, orderBook, runningTrade] =
@@ -123,6 +162,9 @@ async function handleBandarmologi(req, res) {
   const inventoryPacked = pack(inventory);
   const brokerRanking =
     inventoryPacked.ok && inventoryPacked.data?.broker ? rankBrokersFromInventory(inventoryPacked.data.broker) : [];
+  const monthlyFlow = inventoryPacked.ok
+    ? monthlyFlowVsPrice(inventoryPacked.data?.broker, inventoryPacked.data?.price)
+    : [];
 
   const summaryPacked = pack(summary);
   const sankeyPacked = pack(sankey);
@@ -154,12 +196,14 @@ async function handleBandarmologi(req, res) {
     to: todayStr,
     summary: summaryPacked.ok ? summaryPacked.data : null,
     brokerRanking,
+    monthlyFlow,
     sankey: sankeyPacked.ok ? sankeyPacked.data?.links : null,
     ownershipAbove: ownAbovePacked.ok ? ownAbovePacked.data?.data : null,
     ownershipOne: ownOnePacked.ok ? ownOnePacked.data?.data : null,
     ownershipInsider: ownInsiderPacked.ok ? ownInsiderPacked.data?.data : null,
     orderBook: orderBookPacked.ok ? orderBookPacked.data : null,
     runningTrade: runningTradePacked.ok ? runningTradePacked.data?.data?.slice(0, 20) : null,
+    monthlyFlow,
   });
 
   res.setHeader("Cache-Control", "no-store");
@@ -171,6 +215,7 @@ async function handleBandarmologi(req, res) {
     summaryChart: summaryPacked,
     inventoryChart: inventoryPacked,
     brokerRanking,
+    monthlyFlow,
     sankeyChart: sankeyPacked,
     momentumChart: pack(momentum),
     ownershipAbove: ownAbovePacked,
@@ -203,6 +248,7 @@ async function generateBandarmologiNarrative(ctx) {
   const payload = {
     kode: ctx.code,
     periode: `${ctx.from} s/d ${ctx.to}`,
+    trenNetBrokerPerBulanVsHarga: ctx.monthlyFlow,
     ringkasanBuySellDF: ctx.summary,
     topBrokerAkumulasi: topBuy,
     topBrokerDistribusi: topSell,
@@ -222,19 +268,23 @@ async function generateBandarmologiNarrative(ctx) {
           {
             role: "system",
             content:
-              "Anda analis bandarmologi pasar saham Indonesia (IDX/BEI). Diberi data jejak broker " +
-              "(ranking akumulasi/distribusi broker, crossing antar-broker hari ini, perubahan " +
-              "kepemilikan >5%/>1%/insider, order book bid/offer terkini, dan tape/running-trade " +
-              "transaksi terakhir) untuk SATU saham, buat kesimpulan naratif 4-6 kalimat dalam Bahasa " +
-              "Indonesia: (1) apakah pola menunjukkan akumulasi, distribusi, atau netral, " +
-              "(2) broker mana yang paling dominan dan apakah polanya konsisten (bukan cuma satu hari), " +
-              "(3) apakah crossing hari ini dan perubahan kepemilikan MENDUKUNG atau BERTENTANGAN " +
-              "dengan pola broker di atas (validasi silang), (4) dari tape/order book: apakah tekanan " +
-              "beli atau jual yang dominan di harga terkini (misal lot bid jauh lebih besar dari offer, " +
-              "atau sebaliknya), dan apakah transaksi tape besar terakhir searah dengan pola akumulasi/" +
-              "distribusi di atas. Kalau data kosong/tidak cukup di suatu dimensi, sebutkan itu jujur, " +
-              "jangan mengarang. JANGAN memberi saran beli/jual eksplisit — ini alat bantu baca data, " +
-              "bukan rekomendasi transaksi. Gaya bahasa ringkas seperti catatan analis ke rekan kerja.",
+              "Anda analis bandarmologi pasar saham Indonesia (IDX/BEI), paham kerangka fase Wyckoff " +
+              "(akumulasi/markup/distribusi/markdown). Diberi data jejak broker (tren net broker PER " +
+              "BULAN dibandingkan pergerakan harga bulan yang sama selama ~6 bulan terakhir, ranking " +
+              "akumulasi/distribusi broker, crossing antar-broker hari ini, perubahan kepemilikan " +
+              ">5%/>1%/insider, order book bid/offer terkini, dan tape/running-trade transaksi " +
+              "terakhir) untuk SATU saham, buat kesimpulan naratif 5-7 kalimat dalam Bahasa Indonesia: " +
+              "(1) dari tren bulanan, identifikasi fase saat ini — akumulasi (net broker positif, harga " +
+              "sideways/turun), markup (net broker positif, harga naik), distribusi (net broker " +
+              "negatif, harga sideways/naik), atau markdown (net broker negatif, harga turun) — sebutkan " +
+              "kapan pergantian fase terjadi kalau terlihat, (2) broker mana yang paling dominan di fase " +
+              "TERKINI (bukan total 6 bulan) dan apakah konsisten, (3) apakah crossing hari ini dan " +
+              "perubahan kepemilikan MENDUKUNG atau BERTENTANGAN dengan fase di atas (validasi silang), " +
+              "(4) dari tape/order book: tekanan beli/jual dominan di harga terkini dan apakah searah " +
+              "dengan fase yang teridentifikasi. Kalau data kosong/tidak cukup di suatu dimensi (misal " +
+              "kurang dari 6 bulan data), sebutkan itu jujur, jangan mengarang atau memaksakan fase. " +
+              "JANGAN memberi saran beli/jual eksplisit — ini alat bantu baca data, bukan rekomendasi " +
+              "transaksi. Gaya bahasa ringkas seperti catatan analis ke rekan kerja.",
           },
           { role: "user", content: JSON.stringify(payload) },
         ],

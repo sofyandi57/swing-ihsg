@@ -111,6 +111,32 @@ function BrokerRankingSection({ inventorySection, ranking }) {
   );
 }
 
+// Net broker per bulan vs pergerakan harga bulan yang sama — dipakai baca
+// fase Wyckoff (akumulasi/markup/distribusi/markdown) dari waktu ke waktu,
+// bukan cuma total 6 bulan (yang bisa netral padahal ada pergantian fase).
+function MonthlyFlowSection({ monthlyFlow }) {
+  if (!monthlyFlow || monthlyFlow.length === 0) {
+    return <div className="bdm-empty">Data kurang dari 1 bulan — belum bisa baca tren fase.</div>;
+  }
+  const items = monthlyFlow.map((m) => ({
+    label: m.month,
+    value: m.netBrokerValue,
+    priceChangePct: m.priceChangePct,
+  }));
+  return (
+    <div>
+      <BarChart items={items} colorFor={(it) => (it.value >= 0 ? "#22c55e" : "#ef4444")} />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
+        {monthlyFlow.map((m) => (
+          <div key={m.month} className="bdm-empty" style={{ padding: 0 }}>
+            {m.month}: harga {m.priceChangePct != null ? `${m.priceChangePct > 0 ? "+" : ""}${m.priceChangePct}%` : "-"}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SankeySection({ section }) {
   if (!section.ok) return <ErrorNote section={section} />;
   const links = section.data?.links || [];
@@ -409,6 +435,11 @@ export default function BandarmologiTab() {
           <div className="bdm-report-section">
             <h3>🏆 Ranking Broker (Top Buy vs Top Sell)</h3>
             <BrokerRankingSection inventorySection={result.inventoryChart} ranking={result.brokerRanking} />
+          </div>
+
+          <div className="bdm-report-section">
+            <h3>📆 Tren Net Broker Bulanan vs Harga (Fase Wyckoff)</h3>
+            <MonthlyFlowSection monthlyFlow={result.monthlyFlow} />
           </div>
 
           <div className="bdm-report-section">
