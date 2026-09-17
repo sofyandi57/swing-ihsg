@@ -5,6 +5,16 @@
 //
 // GET /api/stock-chart?code=BBCA&timeframe=15
 //
+// GET /api/stock-chart?code=BBCA&action=bandarmologi[&lookbackDays=30] — dipakai
+// tab Bandarmologi baru. Gabungan 5 dimensi jejak broker/insider Invezgo untuk
+// SATU kode saham (tidak ada versi Batch untuk endpoint-endpoint ini — lihat
+// INVEZGO_BANDARMOLOGI_RESEARCH.md): Broker Summary Chart (D/F buy-sell),
+// Stock Inventory Chart (+ ranking broker top net-buy/sell hasil olahan kita),
+// Stock Distribution/Sankey Chart (crossing hari ini), Stock Momentum Chart
+// (arus beli/jual intraday), dan tiga endpoint kepemilikan (>5%, >1%, insider
+// IDX). Tiap dimensi di-fetch independen — satu gagal tidak menggagalkan yang
+// lain.
+//
 // Timeframe yang didukung Invezgo (/analysis/chart/multi-time/{code}):
 //   1, 5, 15, 30, 60 (menit), D (daily), W (weekly), M (monthly)
 // TIDAK ADA opsi 3 menit — itu batasan API Invezgo, bukan pilihan kami.
@@ -44,12 +54,100 @@ function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
 
+// --- action=bandarmologi ----------------------------------------------
+// Ditambahkan sebagai sub-resource di file INI (bukan file api/*.js baru)
+// karena project sudah pas di batas 12 Serverless Function Vercel Hobby —
+// lihat VERCEL_AGENT_SETUP.md. Menggabungkan 5 dimensi jejak broker/insider
+// dari Invezgo untuk SATU kode saham (bukan screener massal — endpoint-
+// endpoint ini tidak punya versi Batch, lihat INVEZGO_BANDARMOLOGI_RESEARCH.md).
+// Tiap dimensi di-fetch independen (Promise.allSettled) — kalau satu gagal
+// (402/rate limit/dsb), dimensi lain tetap tampil, bukan semua ikut gagal.
+async function invezgoGetRaw(path, params = {}) {
+  const url = new URL(INVEZGO_BASE_URL + path);
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null) url.searchParams.set(k, v); });
+  const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+  }
+  return resp.json();
+}
+
+// Ringkas array {broker, data:[{date, value}]} (Broker/Stock Inventory
+// Chart) jadi ranking top net-buy/net-sell — dijumlah sepanjang rentang
+// tanggal yang diminta, bukan cuma hari terakhir.
+function rankBrokersFromInventory(brokerRows) {
+  if (!Array.isArray(brokerRows)) return [];
+  return brokerRows
+    .map((b) => ({
+      broker: b.broker || b.code || "?",
+      netValue: (Array.isArray(b.data) ? b.data : []).reduce((sum, d) => sum + (Number(d.value) || 0), 0),
+    }))
+    .sort((a, b) => b.netValue - a.netValue);
+}
+
+async function handleBandarmologi(req, res) {
+  const code = (req.query?.code || "").toUpperCase().trim();
+  if (!code || !/^[A-Z0-9]{3,7}$/.test(code)) {
+    res.status(400).json({ error: "Parameter 'code' wajib diisi dengan kode saham yang valid." });
+    return;
+  }
+
+  const today = new Date();
+  const todayStr = ymd(today);
+  const lookbackDays = Number(req.query?.lookbackDays) || 30;
+  const from = ymd(new Date(today.getTime() - lookbackDays * 24 * 60 * 60 * 1000));
+
+  const [summary, inventory, sankey, momentum, ownAbove, ownOne, ownInsider] = await Promise.allSettled([
+    invezgoGetRaw(`/analysis/summary-chart/stock/${code}`, { from, to: todayStr, scope: "value", market: "RG" }),
+    invezgoGetRaw(`/analysis/inventory-chart/stock/${code}`, { from, to: todayStr, scope: "val", investor: "all", market: "ALL" }),
+    invezgoGetRaw(`/analysis/sankey-chart/${code}`, { date: todayStr, type: "value", buyer: "ALL", seller: "ALL", market: "RG" }),
+    invezgoGetRaw(`/analysis/momentum-chart/${code}`, { date: todayStr, range: "15", scope: "value" }),
+    invezgoGetRaw(`/analysis/shareholder-above`, { code, from, to: todayStr, limit: 20 }),
+    invezgoGetRaw(`/analysis/shareholder-one`, { code, from, to: todayStr, limit: 20 }),
+    invezgoGetRaw(`/analysis/shareholder-insider`, { code, from, to: todayStr, limit: 20 }),
+  ]);
+
+  function pack(result) {
+    if (result.status === "fulfilled") return { ok: true, data: result.value };
+    return { ok: false, error: String(result.reason?.message || result.reason) };
+  }
+
+  const inventoryPacked = pack(inventory);
+  const brokerRanking =
+    inventoryPacked.ok && inventoryPacked.data?.broker ? rankBrokersFromInventory(inventoryPacked.data.broker) : [];
+
+  res.setHeader("Cache-Control", "no-store");
+  res.status(200).json({
+    code,
+    from,
+    to: todayStr,
+    summaryChart: pack(summary),
+    inventoryChart: inventoryPacked,
+    brokerRanking,
+    sankeyChart: pack(sankey),
+    momentumChart: pack(momentum),
+    ownershipAbove: pack(ownAbove),
+    ownershipOne: pack(ownOne),
+    ownershipInsider: pack(ownInsider),
+  });
+}
+
 export default async function handler(req, res) {
   const user = await requireUser(req, res);
   if (!user) return;
 
   if (!API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
+    return;
+  }
+
+  if (req.query?.action === "bandarmologi") {
+    try {
+      await handleBandarmologi(req, res);
+    } catch (e) {
+      res.status(502).json({ error: String(e.message || e) });
+    }
     return;
   }
 

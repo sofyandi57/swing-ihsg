@@ -3,6 +3,7 @@ import ScanTab from "./components/ScanTab.jsx";
 import MentorTab from "./components/MentorTab.jsx";
 import WatchlistTab from "./components/WatchlistTab.jsx";
 import ChartTab from "./components/ChartTab.jsx";
+import BandarmologiTab from "./components/BandarmologiTab.jsx";
 import DashboardTab from "./components/DashboardTab.jsx";
 import AdminTab from "./components/AdminTab.jsx";
 import LoginPage from "./components/LoginPage.jsx";
@@ -11,6 +12,7 @@ import { supabase, authFetch, isSupabaseConfigured } from "./lib/supabaseClient.
 const BASE_TABS = [
   { id: "scan", label: "Run Scan", icon: "⚡" },
   { id: "chart", label: "Chart", icon: "📊" },
+  { id: "bandarmologi", label: "Bandar", icon: "🕵️" },
   { id: "dashboard", label: "Conviction", icon: "🧭" },
   { id: "mentor", label: "Mentor", icon: "💬" },
   { id: "watchlist", label: "Watchlist", icon: "⭐" },
@@ -147,6 +149,9 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === "chart" ? "block" : "none" }}>
           <ChartTab />
+        </div>
+        <div style={{ display: activeTab === "bandarmologi" ? "block" : "none" }}>
+          <BandarmologiTab />
         </div>
         <div style={{ display: activeTab === "dashboard" ? "block" : "none" }}>
           <DashboardTab />
