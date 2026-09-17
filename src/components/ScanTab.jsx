@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { authFetch } from "../lib/supabaseClient.js";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -125,7 +126,7 @@ export default function ScanTab() {
     setInsightStatus("loading");
     setInsight("");
     try {
-      const resp = await fetch("/api/scan-insight", {
+      const resp = await authFetch("/api/scan-insight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(scanPayload),
@@ -147,7 +148,7 @@ export default function ScanTab() {
     resetFilters();
 
     try {
-      const resp = await fetch("/api/screener");
+      const resp = await authFetch("/api/screener");
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 

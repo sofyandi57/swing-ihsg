@@ -16,6 +16,8 @@
 //   15 → maks 1 tahun terakhir
 //   30, 60, D, W, M → maks 2 tahun terakhir
 
+import { requireUser } from "./_lib/auth.js";
+
 const INVEZGO_BASE_URL = "https://api.invezgo.com";
 const API_KEY = process.env.INVEZGO_API_KEY;
 
@@ -37,6 +39,9 @@ function ymd(date) {
 }
 
 export default async function handler(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
   if (!API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
     return;

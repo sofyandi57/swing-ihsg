@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, CrosshairMode } from "lightweight-charts";
+import { authFetch } from "../lib/supabaseClient.js";
 
 const TIMEFRAMES = [
   { id: "1", label: "1m" },
@@ -87,7 +88,7 @@ export default function ChartTab() {
     setError("");
 
     try {
-      const resp = await fetch(`/api/stock-chart?code=${encodeURIComponent(symbolCode)}&timeframe=${tf}`);
+      const resp = await authFetch(`/api/stock-chart?code=${encodeURIComponent(symbolCode)}&timeframe=${tf}`);
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
@@ -153,7 +154,7 @@ export default function ChartTab() {
     setTaResult(null);
 
     try {
-      const resp = await fetch("/api/technical-analysis", {
+      const resp = await authFetch("/api/technical-analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, timeframe, candles: candlesRef.current }),

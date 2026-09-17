@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { authFetch } from "../lib/supabaseClient.js";
 
 function formatNumber(n) {
   return new Intl.NumberFormat("id-ID").format(Math.round(n));
@@ -59,7 +60,7 @@ export default function WatchlistTab() {
 
   async function loadWatchlist() {
     try {
-      const resp = await fetch("/api/pdf-watchlist");
+      const resp = await authFetch("/api/pdf-watchlist");
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
       setItems(json.items || []);
@@ -82,7 +83,7 @@ export default function WatchlistTab() {
 
     try {
       const base64 = await fileToBase64(file);
-      const resp = await fetch("/api/pdf-watchlist", {
+      const resp = await authFetch("/api/pdf-watchlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, base64 }),

@@ -8,6 +8,7 @@
 // GET (tanpa body): kembalikan mentor_calls terbaru, untuk ditampilkan di UI
 
 import { createClient } from "@supabase/supabase-js";
+import { requireUser } from "./_lib/auth.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -192,6 +193,9 @@ async function findPastMentorMentions(supabase, codes) {
 }
 
 export default async function handler(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
   const supabase = getSupabaseClient();
   if (!supabase) {
     res.status(500).json({ error: "Supabase belum dikonfigurasi (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY kosong)." });

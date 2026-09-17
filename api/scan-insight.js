@@ -8,9 +8,14 @@
 // POST body: { scannedAt, totalScanned, data: [...] } — bentuk sama seperti respons
 // api/screener.js (field `data`).
 
+import { requireUser } from "./_lib/auth.js";
+
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 export default async function handler(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method tidak didukung. Gunakan POST." });
     return;

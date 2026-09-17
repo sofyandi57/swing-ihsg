@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { authFetch } from "../lib/supabaseClient.js";
 
 function CodeCheckResult({ code }) {
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
@@ -9,7 +10,7 @@ function CodeCheckResult({ code }) {
     setStatus("loading");
     setError("");
     try {
-      const resp = await fetch(`/api/check-stock?code=${encodeURIComponent(code)}`);
+      const resp = await authFetch(`/api/check-stock?code=${encodeURIComponent(code)}`);
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
       setResult(json.result);
@@ -100,7 +101,7 @@ export default function MentorTab() {
 
   async function loadHistory() {
     try {
-      const resp = await fetch("/api/mentor-call");
+      const resp = await authFetch("/api/mentor-call");
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
       setHistory(json.calls || []);
@@ -122,7 +123,7 @@ export default function MentorTab() {
     setCrossCheckJson(null);
 
     try {
-      const resp = await fetch("/api/mentor-call", {
+      const resp = await authFetch("/api/mentor-call", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: trimmed }),

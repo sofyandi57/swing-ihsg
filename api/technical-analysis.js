@@ -8,6 +8,8 @@
 //
 // POST body: { code, timeframe, candles: [{ time, open, high, low, close, volume }] }
 
+import { requireUser } from "./_lib/auth.js";
+
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 function sma(closes, period) {
@@ -139,6 +141,9 @@ export const config = {
 };
 
 export default async function handler(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method tidak didukung. Gunakan POST." });
     return;

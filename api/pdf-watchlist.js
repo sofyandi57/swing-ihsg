@@ -16,6 +16,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import pdfParse from "pdf-parse";
+import { requireUser } from "./_lib/auth.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -266,6 +267,9 @@ async function handleGetWatchlist(req, res, supabase) {
 }
 
 export default async function handler(req, res) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
   const supabase = getSupabaseClient();
   if (!supabase) {
     res.status(500).json({ error: "Supabase belum dikonfigurasi (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY kosong)." });
