@@ -44,6 +44,49 @@ function formatCompact(n) {
   return formatNumber(n);
 }
 
+// Ringkasan angka scan saat itu — dipakai sebagai "notes" watchlist supaya
+// kelak di tab Watchlist/Mentor kelihatan konteks kenapa kode ini ditambahkan
+// (bukan cuma kode polos tanpa alasan).
+function buildScanNote(row, mode) {
+  const ratioLabel =
+    mode === "volume_spike"
+      ? `ratio 3v20 ${row.volRatio3v20?.toFixed(2)}x`
+      : mode === "special_if2x"
+      ? `volume vs MA20 ${row.volumeVsMA20?.toFixed(2)}x`
+      : `volume ratio ${row.volumeRatio?.toFixed(2)}x`;
+  return `Dari Run Scan (${mode}): ${ratioLabel}, harga ${Math.round(row.price)} (${row.priceChangePct >= 0 ? "+" : ""}${row.priceChangePct.toFixed(2)}%).`;
+}
+
+function AddToWatchlistButton({ code, notes }) {
+  const [state, setState] = useState("idle"); // idle | loading | added | error
+
+  async function add() {
+    setState("loading");
+    try {
+      const resp = await authFetch("/api/mentor-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add-watchlist", code, notes }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setState("added");
+    } catch (e) {
+      setState("error");
+    }
+  }
+
+  if (state === "added") {
+    return <span className="cross-hit" style={{ marginTop: 0 }}>⭐ Di Watchlist</span>;
+  }
+
+  return (
+    <button className="btn btn-ghost" onClick={add} disabled={state === "loading"} style={{ fontSize: 12 }}>
+      {state === "loading" ? "Menambahkan..." : state === "error" ? "Gagal, coba lagi" : "+ Watchlist"}
+    </button>
+  );
+}
+
 function ResultCard({ row, mode, aiPick }) {
   const isUp = row.priceChangePct >= 0;
   return (
@@ -116,6 +159,9 @@ function ResultCard({ row, mode, aiPick }) {
             </div>
           </>
         )}
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <AddToWatchlistButton code={row.code} notes={buildScanNote(row, mode)} />
       </div>
     </div>
   );
