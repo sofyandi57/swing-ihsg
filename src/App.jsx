@@ -73,7 +73,7 @@ export default function App() {
     return <LoginPage />;
   }
 
-  const tabs = isAdmin ? [...BASE_TABS, { id: "admin", label: "Admin", icon: "🛠️" }] : BASE_TABS;
+  const tabs = BASE_TABS;
 
   return (
     <>
@@ -82,9 +82,21 @@ export default function App() {
           <h1>Volume Scalping Screener</h1>
           <span>{session.user.email}</span>
         </div>
-        <button className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
-          Logout
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {isAdmin && (
+            <button
+              className="btn btn-ghost"
+              title="Admin"
+              style={{ padding: "6px 8px", fontSize: 12, minHeight: "auto" }}
+              onClick={() => setActiveTab("admin")}
+            >
+              🛠️
+            </button>
+          )}
+          <button className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
+            Logout
+          </button>
+        </div>
       </header>
 
       <main>
