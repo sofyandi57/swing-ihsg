@@ -11,7 +11,7 @@ import { supabase, authFetch, isSupabaseConfigured } from "./lib/supabaseClient.
 const BASE_TABS = [
   { id: "scan", label: "Run Scan", icon: "⚡" },
   { id: "chart", label: "Chart", icon: "📊" },
-  { id: "dashboard", label: "Dashboard", icon: "🧭" },
+  { id: "dashboard", label: "Conviction", icon: "🧭" },
   { id: "mentor", label: "Mentor", icon: "💬" },
   { id: "watchlist", label: "Watchlist", icon: "⭐" },
 ];

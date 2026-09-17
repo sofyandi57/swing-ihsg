@@ -85,6 +85,7 @@ export default function ChartTab() {
   const [lastCandle, setLastCandle] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const candlesRef = useRef([]);
+  const [watchlist, setWatchlist] = useState([]);
 
   const [taStatus, setTaStatus] = useState("idle"); // idle | loading | done | error
   const [taResult, setTaResult] = useState(null);
@@ -136,6 +137,26 @@ export default function ChartTab() {
       chartRef.current = null;
     };
   }, []);
+
+  // Ambil watchlist (gabungan dari PDF/mentor/manual) supaya bisa langsung klik
+  // ganti simbol chart tanpa ketik manual — reuse endpoint yang sama dengan
+  // tab Watchlist (/api/pdf-watchlist GET).
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await authFetch("/api/pdf-watchlist");
+        const json = await resp.json();
+        if (resp.ok) setWatchlist(json.items || []);
+      } catch (e) {
+        // Diamkan — watchlist di tab Chart cuma shortcut, bukan fitur inti
+      }
+    })();
+  }, []);
+
+  function selectFromWatchlist(watchCode) {
+    setInputValue(watchCode);
+    setCode(watchCode);
+  }
 
   function clearOverlay() {
     priceLinesRef.current.forEach((line) => {
@@ -338,6 +359,27 @@ export default function ChartTab() {
             Cari
           </button>
         </form>
+
+        {watchlist.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {watchlist.map((item) => (
+              <button
+                key={item.code}
+                className="code-tag"
+                style={{
+                  border: "none",
+                  cursor: "pointer",
+                  background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
+                  color: item.code === code ? "#fff" : "var(--accent)",
+                }}
+                onClick={() => selectFromWatchlist(item.code)}
+                title="Watchlist"
+              >
+                {item.code}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
           {TIMEFRAMES.map((tf) => (

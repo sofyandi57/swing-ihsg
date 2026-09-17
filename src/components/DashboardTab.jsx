@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authFetch } from "../lib/supabaseClient.js";
 
 const MODES = [
@@ -35,6 +35,21 @@ export default function DashboardTab() {
 
   const [priceOverride, setPriceOverride] = useState("");
   const [overrideActive, setOverrideActive] = useState(null);
+  const [watchlist, setWatchlist] = useState([]);
+
+  // Ambil watchlist gabungan (PDF/mentor/manual) supaya bisa langsung klik pilih
+  // simbol untuk dianalisa, reuse endpoint yang sama dengan tab Watchlist.
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await authFetch("/api/pdf-watchlist");
+        const json = await resp.json();
+        if (resp.ok) setWatchlist(json.items || []);
+      } catch (e) {
+        // Diamkan — watchlist di tab Conviction cuma shortcut, bukan fitur inti
+      }
+    })();
+  }, []);
 
   async function runAnalysis(symbolCode, symbolMode, override) {
     setStatus("loading");
@@ -56,6 +71,14 @@ export default function DashboardTab() {
       setError(e.message);
       setStatus("error");
     }
+  }
+
+  function selectFromWatchlist(watchCode) {
+    setInputValue(watchCode);
+    setCode(watchCode);
+    setOverrideActive(null);
+    setPriceOverride("");
+    runAnalysis(watchCode, mode, null);
   }
 
   function handleSearch(e) {
@@ -91,7 +114,7 @@ export default function DashboardTab() {
   return (
     <>
       <div className="card">
-        <h2>🧭 Dashboard — IDX Advisor</h2>
+        <h2>🧭 Conviction — IDX Advisor</h2>
         <p className="sub">
           Skor komposit 6 kategori (tren, momentum, mean-reversion, volume, pola,
           mikrostruktur) dari data OHLCV Invezgo. Alat bantu baca data, bukan
@@ -109,6 +132,28 @@ export default function DashboardTab() {
             Analisa
           </button>
         </form>
+
+        {watchlist.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {watchlist.map((item) => (
+              <button
+                key={item.code}
+                className="code-tag"
+                style={{
+                  border: "none",
+                  cursor: "pointer",
+                  background: item.code === code ? "var(--accent)" : "var(--accent-bg)",
+                  color: item.code === code ? "#fff" : "var(--accent)",
+                }}
+                onClick={() => selectFromWatchlist(item.code)}
+                disabled={status === "loading"}
+                title="Watchlist"
+              >
+                {item.code}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {MODES.map((m) => (
