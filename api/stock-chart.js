@@ -30,6 +30,7 @@ import { requireUser } from "./_lib/auth.js";
 
 const INVEZGO_BASE_URL = "https://api.invezgo.com";
 const API_KEY = process.env.INVEZGO_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const VALID_TIMEFRAMES = new Set(["1", "5", "15", "30", "60", "D", "W", "M"]);
 
@@ -117,20 +118,103 @@ async function handleBandarmologi(req, res) {
   const brokerRanking =
     inventoryPacked.ok && inventoryPacked.data?.broker ? rankBrokersFromInventory(inventoryPacked.data.broker) : [];
 
+  const summaryPacked = pack(summary);
+  const sankeyPacked = pack(sankey);
+  const ownAbovePacked = pack(ownAbove);
+  const ownOnePacked = pack(ownOne);
+  const ownInsiderPacked = pack(ownInsider);
+
+  const narrative = await generateBandarmologiNarrative({
+    code,
+    from,
+    to: todayStr,
+    summary: summaryPacked.ok ? summaryPacked.data : null,
+    brokerRanking,
+    sankey: sankeyPacked.ok ? sankeyPacked.data?.links : null,
+    ownershipAbove: ownAbovePacked.ok ? ownAbovePacked.data?.data : null,
+    ownershipOne: ownOnePacked.ok ? ownOnePacked.data?.data : null,
+    ownershipInsider: ownInsiderPacked.ok ? ownInsiderPacked.data?.data : null,
+  });
+
   res.setHeader("Cache-Control", "no-store");
   res.status(200).json({
     code,
     from,
     to: todayStr,
-    summaryChart: pack(summary),
+    narrative,
+    summaryChart: summaryPacked,
     inventoryChart: inventoryPacked,
     brokerRanking,
-    sankeyChart: pack(sankey),
+    sankeyChart: sankeyPacked,
     momentumChart: pack(momentum),
-    ownershipAbove: pack(ownAbove),
-    ownershipOne: pack(ownOne),
-    ownershipInsider: pack(ownInsider),
+    ownershipAbove: ownAbovePacked,
+    ownershipOne: ownOnePacked,
+    ownershipInsider: ownInsiderPacked,
   });
+}
+
+// Lapisan interpretasi — TANPA ini, tab Bandarmologi cuma dump tabel angka
+// mentah (keluhan User: "tidak sekelas skill analisa transaksi", yang memang
+// selalu menyimpulkan naratif, bukan cuma menyajikan angka). Pola sama persis
+// dengan api/scan-insight.js: best-effort, gagal/GROQ_API_KEY kosong TIDAK
+// menggagalkan seluruh response — cuma narrative jadi string kosong.
+async function generateBandarmologiNarrative(ctx) {
+  if (!GROQ_API_KEY) return { text: "", skipped: true, reason: "GROQ_API_KEY belum diset." };
+
+  const topBuy = ctx.brokerRanking.slice(0, 5);
+  const topSell = [...ctx.brokerRanking].reverse().slice(0, 5);
+  const topCrossing = Array.isArray(ctx.sankey) ? [...ctx.sankey].sort((a, b) => b.value - a.value).slice(0, 5) : [];
+  const ownershipChanges = [
+    ...(ctx.ownershipAbove || []).slice(0, 5).map((r) => ({ ...r, tier: ">5%" })),
+    ...(ctx.ownershipOne || []).slice(0, 5).map((r) => ({ ...r, tier: ">1%" })),
+    ...(ctx.ownershipInsider || []).slice(0, 5).map((r) => ({ ...r, tier: "insider" })),
+  ];
+
+  const payload = {
+    kode: ctx.code,
+    periode: `${ctx.from} s/d ${ctx.to}`,
+    ringkasanBuySellDF: ctx.summary,
+    topBrokerAkumulasi: topBuy,
+    topBrokerDistribusi: topSell,
+    crossingBrokerHariIni: topCrossing,
+    perubahanKepemilikan: ownershipChanges,
+  };
+
+  try {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Anda analis bandarmologi pasar saham Indonesia (IDX/BEI). Diberi data jejak broker " +
+              "(ranking akumulasi/distribusi broker, crossing antar-broker hari ini, dan perubahan " +
+              "kepemilikan >5%/>1%/insider) untuk SATU saham, buat kesimpulan naratif 3-5 kalimat " +
+              "dalam Bahasa Indonesia: (1) apakah pola menunjukkan akumulasi, distribusi, atau netral, " +
+              "(2) broker mana yang paling dominan dan apakah polanya konsisten (bukan cuma satu hari), " +
+              "(3) apakah crossing hari ini dan perubahan kepemilikan MENDUKUNG atau BERTENTANGAN " +
+              "dengan pola broker di atas (validasi silang). Kalau data kosong/tidak cukup di suatu " +
+              "dimensi, sebutkan itu jujur, jangan mengarang. JANGAN memberi saran beli/jual eksplisit " +
+              "— ini alat bantu baca data, bukan rekomendasi transaksi. Gaya bahasa ringkas seperti " +
+              "catatan analis ke rekan kerja.",
+          },
+          { role: "user", content: JSON.stringify(payload) },
+        ],
+        temperature: 0.4,
+      }),
+    });
+
+    if (!resp.ok) return { text: "", skipped: true, reason: `Groq HTTP ${resp.status}` };
+
+    const json = await resp.json();
+    const text = json.choices?.[0]?.message?.content?.trim() || "";
+    return { text, skipped: false };
+  } catch (e) {
+    return { text: "", skipped: true, reason: String(e.message || e) };
+  }
 }
 
 export default async function handler(req, res) {

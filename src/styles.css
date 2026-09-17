@@ -462,6 +462,88 @@ input.input::placeholder { color: var(--muted-2); }
 .history-time { color: var(--muted-2); font-size: 11px; margin-bottom: 3px; font-variant-numeric: tabular-nums; }
 .history-msg { color: var(--text); margin-bottom: 6px; line-height: 1.45; }
 
+/* Tab Bandarmologi — komponen khusus (bukan reuse .cross-hit/.error-box
+   seperti versi pertama, yang menyalahgunakan class alert untuk konten
+   biasa). */
+.bdm-narrative-card { border-color: var(--accent); }
+.bdm-narrative {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.bdm-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 8px 0;
+}
+.bdm-subtitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+  margin-bottom: 8px;
+}
+.bdm-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.bdm-barchart { display: flex; flex-direction: column; gap: 8px; }
+.bdm-bar-row {
+  display: grid;
+  grid-template-columns: 84px 1fr 64px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.bdm-bar-label {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bdm-bar-track {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.bdm-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width var(--dur-med) var(--ease-out);
+}
+.bdm-bar-value {
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.bdm-table-wrap { overflow-x: auto; }
+.bdm-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.bdm-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--muted-2);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.bdm-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.bdm-table tr:hover td { background: var(--panel-hover); }
+
+@media (max-width: 480px) {
+  .bdm-two-col { grid-template-columns: 1fr; }
+  .bdm-bar-row { grid-template-columns: 64px 1fr 52px; }
+}
+
 @media (min-width: 480px) {
   .result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

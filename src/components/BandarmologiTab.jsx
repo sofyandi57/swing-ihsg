@@ -5,111 +5,131 @@ function fmtNum(n) {
   if (n === null || n === undefined || n === "") return "-";
   const num = Number(n);
   if (!Number.isFinite(num)) return "-";
+  if (Math.abs(num) >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(2)}M`;
+  if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}jt`;
   return num.toLocaleString("id-ID");
 }
 
-function SectionError({ section }) {
+function ErrorNote({ section }) {
   if (section.ok) return null;
-  return <div className="error-box" style={{ marginTop: 8 }}>Tidak tersedia: {section.error}</div>;
+  return <div className="bdm-empty">Tidak tersedia: {section.error}</div>;
 }
 
-function BrokerRankingTable({ ranking }) {
-  if (!ranking || ranking.length === 0) return <p className="sub">Tidak ada data broker.</p>;
-  const topBuy = ranking.slice(0, 5);
-  const topSell = [...ranking].reverse().slice(0, 5);
+// Bar chart horizontal generik — dipakai di semua section supaya konsisten,
+// panjang bar proporsional terhadap nilai maksimum absolut di dataset yang
+// sama (bukan skala tetap), jadi baik dataset kecil maupun besar tetap
+// terbaca.
+function BarChart({ items, colorFor }) {
+  if (!items || items.length === 0) return null;
+  const maxAbs = Math.max(...items.map((it) => Math.abs(it.value)), 1);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-      <div>
-        <div className="result-metric-label">TOP NET BUY (akumulasi)</div>
-        {topBuy.map((b) => (
-          <div key={b.broker} className="cross-hit" style={{ marginTop: 4, display: "flex", justifyContent: "space-between" }}>
-            <b>{b.broker}</b> <span>{fmtNum(b.netValue)}</span>
+    <div className="bdm-barchart">
+      {items.map((it, i) => (
+        <div key={i} className="bdm-bar-row">
+          <div className="bdm-bar-label">{it.label}</div>
+          <div className="bdm-bar-track">
+            <div
+              className="bdm-bar-fill"
+              style={{
+                width: `${Math.min(100, (Math.abs(it.value) / maxAbs) * 100)}%`,
+                background: colorFor ? colorFor(it) : "#3fb950",
+              }}
+            />
           </div>
-        ))}
-      </div>
-      <div>
-        <div className="result-metric-label">TOP NET SELL (distribusi)</div>
-        {topSell.map((b) => (
-          <div key={b.broker} className="error-box" style={{ marginTop: 4, display: "flex", justifyContent: "space-between" }}>
-            <b>{b.broker}</b> <span>{fmtNum(b.netValue)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SummaryChart({ section }) {
-  if (!section.ok || !Array.isArray(section.data)) return <SectionError section={section} />;
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-      {section.data.map((row, i) => (
-        <div key={i} className="cross-hit" style={{ minWidth: 100 }}>
-          <div className="result-metric-label">{row.label}</div>
-          <b>{fmtNum(row.value)}</b>
+          <div className="bdm-bar-value">{fmtNum(it.value)}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function SankeyTable({ section }) {
-  if (!section.ok) return <SectionError section={section} />;
+function NarrativePanel({ narrative }) {
+  if (!narrative) return null;
+  if (narrative.skipped || !narrative.text) {
+    return (
+      <div className="bdm-empty">
+        Narasi AI tidak tersedia{narrative.reason ? ` (${narrative.reason})` : ""} — data mentah tetap
+        ditampilkan di bawah.
+      </div>
+    );
+  }
+  return <div className="bdm-narrative">🧠 {narrative.text}</div>;
+}
+
+function SummarySection({ section }) {
+  if (!section.ok || !Array.isArray(section.data)) return <ErrorNote section={section} />;
+  const items = section.data.map((row) => ({ label: row.label, value: Number(row.value) || 0 }));
+  const colorFor = (it) => {
+    const isBuy = it.label.includes("Buy");
+    const isForeign = it.label.startsWith("F");
+    return isBuy ? (isForeign ? "#8b5cf6" : "#22c55e") : isForeign ? "#c026d3" : "#ef4444";
+  };
+  return <BarChart items={items} colorFor={colorFor} />;
+}
+
+function BrokerRankingSection({ inventorySection, ranking }) {
+  if (!inventorySection.ok) return <ErrorNote section={inventorySection} />;
+  if (!ranking || ranking.length === 0) return <div className="bdm-empty">Tidak ada data broker.</div>;
+  const topBuy = ranking.slice(0, 5).map((b) => ({ label: b.broker, value: b.netValue }));
+  const topSell = [...ranking]
+    .reverse()
+    .slice(0, 5)
+    .map((b) => ({ label: b.broker, value: b.netValue }));
+  return (
+    <div className="bdm-two-col">
+      <div>
+        <div className="bdm-subtitle">TOP AKUMULASI</div>
+        <BarChart items={topBuy} colorFor={() => "#22c55e"} />
+      </div>
+      <div>
+        <div className="bdm-subtitle">TOP DISTRIBUSI</div>
+        <BarChart items={topSell} colorFor={() => "#ef4444"} />
+      </div>
+    </div>
+  );
+}
+
+function SankeySection({ section }) {
+  if (!section.ok) return <ErrorNote section={section} />;
   const links = section.data?.links || [];
-  if (links.length === 0) return <p className="sub">Tidak ada crossing broker hari ini.</p>;
-  const sorted = [...links].sort((a, b) => b.value - a.value).slice(0, 10);
-  return (
-    <div style={{ marginTop: 8 }}>
-      {sorted.map((l, i) => (
-        <div key={i} className="cross-hit" style={{ marginTop: 4, display: "flex", justifyContent: "space-between" }}>
-          <span>{(l.source || "").trim()} → {(l.target || "").trim()}</span>
-          <b>{fmtNum(l.value)}</b>
-        </div>
-      ))}
-    </div>
-  );
+  if (links.length === 0) return <div className="bdm-empty">Tidak ada crossing broker hari ini.</div>;
+  const items = [...links]
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+    .map((l) => ({ label: `${(l.source || "").trim()} → ${(l.target || "").trim()}`, value: l.value }));
+  return <BarChart items={items} colorFor={() => "#f59e0b"} />;
 }
 
-function MomentumTable({ section }) {
-  if (!section.ok || !Array.isArray(section.data)) return <SectionError section={section} />;
-  const rows = section.data.filter((r) => r.buy_lot || r.sell_lot).slice(0, 12);
-  if (rows.length === 0) return <p className="sub">Belum ada aktivitas signifikan hari ini.</p>;
-  return (
-    <div style={{ marginTop: 8, maxHeight: 260, overflowY: "auto" }}>
-      {rows.map((r, i) => (
-        <div key={i} className="cross-hit" style={{ marginTop: 4, display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-          <span>{r.time}</span>
-          <span>Buy: {fmtNum(r.buy_lot)}</span>
-          <span>Sell: {fmtNum(r.sell_lot)}</span>
-        </div>
-      ))}
-    </div>
-  );
+function MomentumSection({ section }) {
+  if (!section.ok || !Array.isArray(section.data)) return <ErrorNote section={section} />;
+  const rows = section.data.filter((r) => r.buy_lot || r.sell_lot).slice(0, 10);
+  if (rows.length === 0) return <div className="bdm-empty">Belum ada aktivitas signifikan hari ini.</div>;
+  const items = rows.flatMap((r) => [
+    { label: `${r.time} Buy`, value: Number(r.buy_lot) || 0, group: "buy" },
+    { label: `${r.time} Sell`, value: Number(r.sell_lot) || 0, group: "sell" },
+  ]);
+  return <BarChart items={items} colorFor={(it) => (it.group === "buy" ? "#22c55e" : "#ef4444")} />;
 }
 
 function OwnershipTable({ section, columns }) {
-  if (!section.ok) return <SectionError section={section} />;
+  if (!section.ok) return <ErrorNote section={section} />;
   const rows = section.data?.data || [];
-  if (rows.length === 0) return <p className="sub">Tidak ada perubahan kepemilikan pada rentang ini.</p>;
+  if (rows.length === 0) return <div className="bdm-empty">Tidak ada perubahan kepemilikan pada rentang ini.</div>;
   return (
-    <div style={{ marginTop: 8, overflowX: "auto" }}>
-      <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+    <div className="bdm-table-wrap">
+      <table className="bdm-table">
         <thead>
           <tr>
             {columns.map((c) => (
-              <th key={c.key} style={{ textAlign: "left", padding: "4px 6px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                {c.label}
-              </th>
+              <th key={c.key}>{c.label}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 20).map((row, i) => (
+          {rows.slice(0, 15).map((row, i) => (
             <tr key={i}>
               {columns.map((c) => (
-                <td key={c.key} style={{ padding: "4px 6px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                  {c.format ? c.format(row[c.key]) : row[c.key] ?? "-"}
-                </td>
+                <td key={c.key}>{c.format ? c.format(row[c.key]) : row[c.key] ?? "-"}</td>
               ))}
             </tr>
           ))}
@@ -149,8 +169,9 @@ export default function BandarmologiTab() {
         <h2>🕵️ Bandarmologi</h2>
         <p className="sub">
           Jejak broker per saham: siapa akumulasi/distribusi, broker mana crossing hari ini, arus beli/jual
-          intraday, dan perubahan kepemilikan &gt;5%/&gt;1%/insider. Endpoint ini per-kode (bukan screener massal —
-          Invezgo tidak menyediakan versi batch untuk data broker/insider).
+          intraday, dan perubahan kepemilikan &gt;5%/&gt;1%/insider — dengan kesimpulan naratif AI, bukan
+          cuma tabel angka. Per-kode (bukan screener massal — Invezgo tidak menyediakan versi batch untuk
+          data broker/insider).
         </p>
         <div style={{ display: "flex", gap: 8 }}>
           <input
@@ -170,28 +191,29 @@ export default function BandarmologiTab() {
 
       {result && (
         <>
+          <div className="card bdm-narrative-card">
+            <h2>🧠 Kesimpulan</h2>
+            <NarrativePanel narrative={result.narrative} />
+          </div>
+
           <div className="card">
             <h2>📊 Broker Summary (Institusi vs Ritel)</h2>
-            <SummaryChart section={result.summaryChart} />
+            <SummarySection section={result.summaryChart} />
           </div>
 
           <div className="card">
             <h2>🏆 Ranking Broker ({result.from} s/d {result.to})</h2>
-            {result.inventoryChart.ok ? (
-              <BrokerRankingTable ranking={result.brokerRanking} />
-            ) : (
-              <SectionError section={result.inventoryChart} />
-            )}
+            <BrokerRankingSection inventorySection={result.inventoryChart} ranking={result.brokerRanking} />
           </div>
 
           <div className="card">
             <h2>🔀 Crossing Broker Hari Ini</h2>
-            <SankeyTable section={result.sankeyChart} />
+            <SankeySection section={result.sankeyChart} />
           </div>
 
           <div className="card">
             <h2>⚡ Arus Beli/Jual Intraday</h2>
-            <MomentumTable section={result.momentumChart} />
+            <MomentumSection section={result.momentumChart} />
           </div>
 
           <div className="card">
