@@ -52,6 +52,11 @@ function ResultCard({ row, mode, aiPick }) {
         </span>
       </div>
       {aiPick && <div className="cross-hit" style={{ marginTop: 0, marginBottom: 8 }}>🤖 {aiPick.reason}</div>}
+      {row.sudahNaikTajam && (
+        <div className="cross-miss" style={{ marginTop: 0, marginBottom: 8 }}>
+          ⚠️ Sudah naik tajam hari ini (+{row.priceChangePct.toFixed(1)}%) — kemungkinan dekat/sudah ARA, hati-hati kejar harga.
+        </div>
+      )}
       {(row.sector || row.subsector) && (
         <div className="sub" style={{ marginBottom: 8 }}>
           {row.sector || "—"}

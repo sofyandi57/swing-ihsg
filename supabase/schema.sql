@@ -67,6 +67,11 @@ alter table scan_results add column if not exists vol_ratio_3v20 numeric;
 alter table scan_results add column if not exists price_change_3d numeric;
 alter table scan_results add column if not exists quiet_accumulation boolean;
 
+-- Proxy "sudah naik tajam hari ini" (priceChangePct >= 20%) — heuristik untuk
+-- kemungkinan sudah/dekat ARA, BUKAN deteksi ARA resmi. Badge peringatan saja,
+-- tidak menyaring hasil keluar dari mode manapun.
+alter table scan_results add column if not exists sudah_naik_tajam boolean;
+
 -- Index untuk query histori yang umum: "tampilkan semua run terbaru",
 -- "tampilkan semua hasil untuk saham X dari waktu ke waktu"
 create index if not exists idx_scan_results_run_id on scan_results(run_id);

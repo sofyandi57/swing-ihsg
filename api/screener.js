@@ -112,6 +112,7 @@ function rowFromDb(r) {
     volRatio3v20: r.vol_ratio_3v20 != null ? Number(r.vol_ratio_3v20) : null,
     priceChange3d: r.price_change_3d != null ? Number(r.price_change_3d) : null,
     quietAccumulation: r.quiet_accumulation,
+    sudahNaikTajam: r.sudah_naik_tajam,
   };
 }
 
@@ -274,10 +275,14 @@ async function getDailyMetrics(code, lookbackDays = 10) {
 }
 
 // Empat mode kriteria — dipilih User SEBELUM scan (bukan filter sesudahnya):
-//   global       — semua saham yang berhasil di-scan, tanpa kriteria tambahan
-//   sektor       — hanya saham di sektor (dan opsional subsektor) yang dipilih;
-//                  codes DIPERSEMPIT sebelum fetch chart, jadi scan-nya lebih
-//                  cepat (bukan cuma filter tampilan)
+//   global       — volume ratio >= MIN_VOLUME_RATIO (default 3x, Admin panel),
+//                  prevVolume >= MIN_PREV_VOLUME, price >= MIN_PRICE — floor
+//                  yang sama dipakai sejak awal project, supaya rasio yang
+//                  tampil memang "berkali lipat" (bukan cuma naik sedikit dari
+//                  base volume yang kecil banget)
+//   sektor       — sama seperti global, TAPI codes DIPERSEMPIT ke sektor (dan
+//                  opsional subsektor) yang dipilih SEBELUM fetch chart, jadi
+//                  scan-nya lebih cepat (bukan cuma filter tampilan)
 //   value        — value (price x volume) hari ini >= minValue
 //   volume_spike — rata-rata volume 3 hari terakhir >= minRatio x rata-rata
 //                  volume 20 hari sebelumnya (butuh >=23 hari data — lihat
@@ -305,11 +310,19 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     // volRatio3v20 mentah, tanpa syarat harga 0-10% ini).
     const quietAccumulation =
       r.volRatio3v20 !== null && r.priceChange3d !== null && r.volRatio3v20 >= 1.0 && r.priceChange3d >= 0 && r.priceChange3d <= 10;
+    // Proxy "sudah naik tajam duluan" (kemungkinan sudah/dekat ARA) — heuristik
+    // dari priceChangePct hari ini, BUKAN deteksi ARA resmi (butuh data batas
+    // auto-reject per tier harga yang tidak tersedia di endpoint ini). Dipakai
+    // sebagai badge peringatan, TIDAK menyaring hasil keluar — sesuai metode
+    // Sherly (langkah 5-6): tetap tampilkan, tapi kasih tahu risikonya supaya
+    // User yang putuskan, bukan otomatis dibuang.
+    const sudahNaikTajam = priceChangePct >= 20;
     return {
       ...r,
       volumeRatio,
       priceChangePct,
       quietAccumulation,
+      sudahNaikTajam,
       sector: sectorByCode.get(r.code) || null,
       value: r.price * r.volume,
     };
@@ -335,12 +348,19 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
       .filter((r) => r.volRatio3v20 !== null && r.volRatio3v20 >= threshold)
       .sort((a, b) => b.volRatio3v20 - a.volRatio3v20);
   } else if (mode === "sektor") {
-    matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio).sort(
-      (a, b) => b.volumeRatio - a.volumeRatio
-    );
+    matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio)
+      .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
+      .sort((a, b) => b.volumeRatio - a.volumeRatio);
   } else {
-    // global — tanpa kriteria tambahan
-    matched = [...allWithRatio].sort((a, b) => b.volumeRatio - a.volumeRatio);
+    // global — TETAP butuh volume ratio minimum (default 3x, bisa diubah di
+    // Admin panel) dan volume dasar (prevVolume) minimum, supaya tidak ada
+    // "rasio menipu" dari saham yang base volume-nya kecil banget (misal dari
+    // 100 lembar ke 5.000 lembar = rasio 50x tapi tidak berarti apa-apa).
+    // Ini persis langkah 3 di metode Sherly: "pilih yang volume jauh/berkali
+    // lipat dari prev volume" — bukan cuma "lebih tinggi sedikit".
+    matched = allWithRatio
+      .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
+      .sort((a, b) => b.volumeRatio - a.volumeRatio);
   }
 
   // Batas keras (hardcode, berlaku di SEMUA mode termasuk "value" — sebagai
@@ -412,6 +432,7 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
     vol_ratio_3v20: r.volRatio3v20,
     price_change_3d: r.priceChange3d,
     quiet_accumulation: r.quietAccumulation,
+    sudah_naik_tajam: r.sudahNaikTajam,
   }));
 
   const INSERT_BATCH_SIZE = 200;
