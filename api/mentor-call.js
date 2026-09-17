@@ -337,6 +337,28 @@ function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
 
+// Ambil harga penutupan terakhir SATU kode — dipakai untuk catat "harga saat
+// masuk watchlist" di watchlist_history. Best-effort: gagal di sini TIDAK
+// menggagalkan penambahan ke watchlist, cuma bikin price null di histori.
+async function fetchLatestPrice(code) {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000);
+    const url = new URL(`${INVEZGO_BASE_URL}/analysis/chart/stock/${code}`);
+    url.searchParams.set("from", ymd(from));
+    url.searchParams.set("to", ymd(to));
+    const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` } });
+    if (!resp.ok) return null;
+    const chart = await resp.json();
+    if (!Array.isArray(chart) || chart.length === 0) return null;
+    const rows = [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const price = Number(rows[rows.length - 1].close);
+    return Number.isFinite(price) ? price : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function handleCheckStock(req, res) {
   if (!INVEZGO_API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
@@ -481,6 +503,8 @@ export default async function handler(req, res) {
       res.status(502).json({ error: upsertErr.message });
       return;
     }
+    const price = await fetchLatestPrice(code);
+    await supabase.from("watchlist_history").insert([{ code, price, source: "mentor_call" }]);
     res.status(200).json({ added: true, code });
     return;
   }

@@ -121,6 +121,23 @@ create table if not exists watchlist (
   notes text                      -- ringkasan AI terkini untuk kode ini
 );
 
+-- watchlist_history — LOG (bukan state aktif seperti watchlist di atas). Satu baris
+-- BARU tiap kali kode di-tambahkan ke watchlist (bisa berkali-kali untuk kode yang
+-- sama kalau ditambahkan lagi di lain waktu) — dipakai tombol "Histori" di tab
+-- Watchlist untuk menunjukkan kapan (tanggal+jam) dan di harga berapa suatu kode
+-- pertama kali menarik perhatian, tanpa hilang begitu upsert watchlist meng-update
+-- baris state aktifnya.
+create table if not exists watchlist_history (
+  id uuid primary key default gen_random_uuid(),
+  code text not null,
+  price numeric,          -- harga saat ditambahkan (null kalau gagal ambil harga live)
+  source text not null,   -- 'pdf' | 'mentor_call' | 'manual'
+  added_at timestamptz not null default now()
+);
+
+create index if not exists idx_watchlist_history_added_at on watchlist_history(added_at desc);
+create index if not exists idx_watchlist_history_code on watchlist_history(code);
+
 -- RLS (Row Level Security) diaktifkan secara default oleh Supabase untuk tabel baru
 -- di beberapa setup. Karena aplikasi ini hanya menulis lewat service_role key di
 -- server (yang otomatis bypass RLS), dan TIDAK ADA akses langsung dari browser,
@@ -132,6 +149,7 @@ alter table scan_results enable row level security;
 alter table mentor_calls enable row level security;
 alter table pdf_extracts enable row level security;
 alter table watchlist enable row level security;
+alter table watchlist_history enable row level security;
 
 -- ===== Auth & Admin (login/logout + admin panel) =====
 --

@@ -102,6 +102,10 @@ export default function WatchlistTab() {
   const [uploadStatus, setUploadStatus] = useState("idle"); // idle | loading | error
   const [uploadError, setUploadError] = useState("");
   const [lastResult, setLastResult] = useState(null);
+  const [deletingAll, setDeletingAll] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState(null);
+  const [historyError, setHistoryError] = useState("");
   const fileInputRef = useRef(null);
 
   async function loadWatchlist() {
@@ -127,6 +131,37 @@ export default function WatchlistTab() {
       setItems((prev) => (prev || []).filter((it) => it.code !== code));
     } catch (e) {
       setError(`Gagal hapus ${code}: ${e.message}`);
+    }
+  }
+
+  async function deleteAllWatchlist() {
+    if (!items || items.length === 0) return;
+    if (!window.confirm(`Hapus SEMUA ${items.length} kode dari watchlist? Tindakan ini tidak bisa dibatalkan.`)) return;
+    setDeletingAll(true);
+    try {
+      const resp = await authFetch("/api/pdf-watchlist?all=true", { method: "DELETE" });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setItems([]);
+    } catch (e) {
+      setError(`Gagal hapus semua: ${e.message}`);
+    } finally {
+      setDeletingAll(false);
+    }
+  }
+
+  async function toggleHistory() {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next && history === null) {
+      try {
+        const resp = await authFetch("/api/pdf-watchlist?history=true");
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+        setHistory(json.history || []);
+      } catch (e) {
+        setHistoryError(e.message);
+      }
     }
   }
 
@@ -212,21 +247,69 @@ export default function WatchlistTab() {
       )}
 
       <div className="card">
-        <h2>⭐ Watchlist Aktif</h2>
-        <p className="sub">Digabung dengan status scan terkini setiap kali dibuka.</p>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+          <div>
+            <h2>⭐ Watchlist Aktif</h2>
+            <p className="sub" style={{ marginBottom: 0 }}>Digabung dengan status scan terkini setiap kali dibuka.</p>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button className="btn btn-ghost" onClick={toggleHistory}>
+              {showHistory ? "Tutup Histori" : "🕓 Histori"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={deleteAllWatchlist}
+              disabled={deletingAll || !items || items.length === 0}
+              style={{ color: "var(--red)", borderColor: "oklch(66% 0.20 22 / 0.35)" }}
+            >
+              {deletingAll ? "Menghapus..." : "🗑️ Hapus Semua"}
+            </button>
+          </div>
+        </div>
 
-        {error && <div className="error-box">Gagal memuat watchlist: {error}</div>}
+        {error && <div className="error-box" style={{ marginTop: 12 }}>Gagal memuat watchlist: {error}</div>}
         {items === null && !error && <div className="state-box">Memuat watchlist...</div>}
         {items && items.length === 0 && <div className="state-box">Watchlist masih kosong — upload PDF atau cross-check pesan mentor untuk mulai isi.</div>}
 
         {items && items.length > 0 && (
-          <div className="result-list">
+          <div className="result-list" style={{ marginTop: 12 }}>
             {items.map((item) => (
               <WatchlistCard key={item.code} item={item} onRemove={removeFromWatchlist} />
             ))}
           </div>
         )}
       </div>
+
+      {showHistory && (
+        <div className="card">
+          <h2>🕓 Histori Watchlist</h2>
+          <p className="sub">
+            Catatan setiap kali sebuah kode ditambahkan ke watchlist — kode, harga saat
+            itu, tanggal, dan jam. 200 kejadian terakhir.
+          </p>
+          {historyError && <div className="error-box">Gagal memuat histori: {historyError}</div>}
+          {history === null && !historyError && <div className="state-box">Memuat histori...</div>}
+          {history && history.length === 0 && <div className="state-box">Belum ada histori penambahan watchlist.</div>}
+          {history && history.length > 0 && (
+            <div>
+              {history.map((h) => (
+                <div className="history-item" key={h.id}>
+                  <div className="history-time">
+                    {new Date(h.added_at).toLocaleDateString("id-ID")}{" "}
+                    {new Date(h.added_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  <div className="history-msg">
+                    <span className="code-tag">{h.code}</span>
+                    {h.price != null ? ` Rp ${formatNumber(h.price)}` : " harga tidak tersedia"}
+                    {" · "}
+                    {SOURCE_LABEL[h.source] || h.source}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

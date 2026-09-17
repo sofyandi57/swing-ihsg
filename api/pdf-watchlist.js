@@ -84,6 +84,56 @@ function buildCodeContext(text, code) {
   return hit ? hit.trim().slice(0, 300) : null;
 }
 
+function ymd(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// Ambil harga penutupan terakhir SATU kode — dipakai untuk catat "harga saat
+// masuk watchlist" di watchlist_history. Best-effort: gagal di sini TIDAK
+// menggagalkan upload/upsert watchlist, cuma bikin price null di histori.
+async function fetchLatestPrice(code) {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000);
+    const url = new URL(`${INVEZGO_BASE_URL}/analysis/chart/stock/${code}`);
+    url.searchParams.set("from", ymd(from));
+    url.searchParams.set("to", ymd(to));
+    const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` } });
+    if (!resp.ok) return null;
+    const chart = await resp.json();
+    if (!Array.isArray(chart) || chart.length === 0) return null;
+    const rows = [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const price = Number(rows[rows.length - 1].close);
+    return Number.isFinite(price) ? price : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Bounded-concurrency: PDF riset biasanya cuma menghasilkan sedikit kode (~5-30),
+// jadi concurrency kecil (5) cukup cepat tanpa membebani rate limit Invezgo -
+// beda dengan scan penuh 900 saham yang butuh concurrency tinggi.
+async function fetchPricesBounded(codes, concurrency = 5) {
+  const prices = {};
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < codes.length) {
+      const i = nextIndex++;
+      prices[codes[i]] = await fetchLatestPrice(codes[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, codes.length) }, worker));
+  return prices;
+}
+
+async function logWatchlistHistory(supabase, codes, prices, source) {
+  if (codes.length === 0) return;
+  const rows = codes.map((code) => ({ code, price: prices[code] ?? null, source }));
+  await supabase.from("watchlist_history").insert(rows);
+  // Best-effort - kalau gagal, tidak menggagalkan alur utama (watchlist state
+  // aktif sudah ter-upsert; histori cuma pelengkap, bukan sumber kebenaran).
+}
+
 // Beda dengan mentor-call.js: di sini Groq juga diminta ringkasan/insight PER
 // KODE (target harga, alasan rekomendasi), bukan cuma daftar kode — karena PDF
 // riset biasanya punya konteks lebih kaya yang sayang dibuang (briefing 4.1).
@@ -165,6 +215,19 @@ async function extractWithGroq(text) {
 // aktif (kalau kode itu disebut lagi nanti dari sumber manapun, akan masuk
 // lagi lewat upsert seperti biasa).
 async function handleDelete(req, res, supabase) {
+  // Hapus SEMUA baris watchlist — tombol "Hapus Semua" di UI. Histori
+  // (watchlist_history) TIDAK ikut terhapus, jadi kapan-kode-apa-pernah-masuk
+  // tetap bisa dilihat lewat tombol Histori meski watchlist aktif sudah bersih.
+  if (req.query && req.query.all === "true") {
+    const { error } = await supabase.from("watchlist").delete().neq("code", "");
+    if (error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    res.status(200).json({ deletedAll: true });
+    return;
+  }
+
   const code = ((req.query && req.query.code) || "").toUpperCase().trim();
   if (!code) {
     res.status(400).json({ error: "Parameter 'code' wajib diisi." });
@@ -176,6 +239,23 @@ async function handleDelete(req, res, supabase) {
     return;
   }
   res.status(200).json({ deleted: true, code });
+}
+
+// Histori penambahan watchlist — beda dari handleGetWatchlist (state AKTIF saat
+// ini): ini LOG semua kejadian "kode X masuk watchlist" dari waktu ke waktu,
+// dengan harga saat itu, untuk tombol "Histori" di UI.
+async function handleGetHistory(req, res, supabase) {
+  const { data, error } = await supabase
+    .from("watchlist_history")
+    .select("*")
+    .order("added_at", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    res.status(502).json({ error: error.message });
+    return;
+  }
+  res.status(200).json({ history: data || [] });
 }
 
 async function handleUpload(req, res, supabase) {
@@ -248,6 +328,9 @@ async function handleUpload(req, res, supabase) {
         res.status(502).json({ error: `Ekstraksi tersimpan tapi gagal update watchlist: ${upsertError.message}` });
         return;
       }
+
+      const prices = await fetchPricesBounded(validated);
+      await logWatchlistHistory(supabase, validated, prices, "pdf");
     }
 
     res.status(200).json({
@@ -327,6 +410,10 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "GET") {
+    if (req.query && req.query.history === "true") {
+      await handleGetHistory(req, res, supabase);
+      return;
+    }
     await handleGetWatchlist(req, res, supabase);
     return;
   }
