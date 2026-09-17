@@ -309,13 +309,11 @@ function average(nums) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-// lookbackDays: 10 hari cukup untuk metrik 2-hari (dipakai mode global/sektor/
-// value). HANYA mode "volume_spike" butuh ~40 hari kalender (>=23 hari
-// PERDAGANGAN) untuk rata-rata volume 3-vs-20-hari — meminta 40 hari untuk
-// SEMUA mode (versi sebelumnya) membuat payload per saham 4x lebih besar dan
-// scan jadi jauh lebih lambat (bahkan untuk mode yang tidak butuh data itu
-// sama sekali) — ini penyebab scan terasa sangat lambat di semua mode.
-async function getDailyMetrics(code, lookbackDays = 10) {
+// Fetch mentah + retry 429 — dipisah dari perhitungan supaya bisa dipakai
+// ULANG untuk fetch "murah" (10 hari) MAUPUN fetch "mahal" (40 hari) tanpa
+// duplikasi logic retry. Lihat getDailyMetrics/getExtendedMetrics di bawah
+// untuk kenapa dipisah dua tahap begini (multistage filter, hemat kuota).
+async function fetchChartRows(code, lookbackDays) {
   const to = new Date();
   const from = new Date(to.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
 
@@ -343,8 +341,18 @@ async function getDailyMetrics(code, lookbackDays = 10) {
   }
 
   if (!Array.isArray(chart) || chart.length < 2) return null;
+  return [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+}
 
-  const rows = [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+// lookbackDays: 10 hari cukup untuk metrik 2-hari (dipakai SEMUA mode di
+// STAGE 1 — global/sektor/value/momentum_sniper langsung, volume_spike/
+// special_if2x pakai ini dulu SEBELUM fetch tambahan 40-hari). Payload 10
+// hari jauh lebih kecil/cepat daripada 40 hari — inilah yang bikin scan
+// murah untuk ~900 saham sekaligus.
+async function getDailyMetrics(code, lookbackDays = 10) {
+  const rows = await fetchChartRows(code, lookbackDays);
+  if (!rows) return null;
+
   const today = rows[rows.length - 1];
   const prev = rows[rows.length - 2];
 
@@ -358,24 +366,6 @@ async function getDailyMetrics(code, lookbackDays = 10) {
 
   if (!prevVolume || !Number.isFinite(volume) || !Number.isFinite(prevVolume)) return null;
 
-  // Kriteria "akumulasi diam-diam" — butuh minimal 23 hari perdagangan
-  // (3 hari terakhir + 20 hari sebelum itu). Kalau data kurang (saham baru
-  // IPO, suspend lama, dll), field ini null — tidak menggagalkan baris.
-  let avgVolume3d = null;
-  let avgVolume20d = null;
-  let volRatio3v20 = null;
-  let priceChange3d = null;
-
-  if (rows.length >= 23) {
-    const last3 = rows.slice(-3);
-    const prior20 = rows.slice(-23, -3);
-    avgVolume3d = average(last3.map((r) => Number(r.volume)));
-    avgVolume20d = average(prior20.map((r) => Number(r.volume)));
-    volRatio3v20 = avgVolume20d > 0 ? avgVolume3d / avgVolume20d : null;
-    const closeStart3d = Number(rows[rows.length - 3].close);
-    priceChange3d = closeStart3d > 0 ? ((price - closeStart3d) / closeStart3d) * 100 : null;
-  }
-
   return {
     code,
     volume,
@@ -385,11 +375,36 @@ async function getDailyMetrics(code, lookbackDays = 10) {
     open,
     low,
     high,
-    avgVolume3d,
-    avgVolume20d,
-    volRatio3v20,
-    priceChange3d,
+    avgVolume3d: null,
+    avgVolume20d: null,
+    volRatio3v20: null,
+    priceChange3d: null,
   };
+}
+
+// STAGE 2 khusus mode volume_spike/special_if2x — fetch ULANG dengan 40 hari,
+// TAPI HANYA untuk kode yang sudah lolos filter likuiditas murah dari Stage 1
+// (biasanya seperlima s/d sepersepuluh dari total universe, bukan ~900).
+// Butuh minimal 23 hari PERDAGANGAN (3 hari terakhir + 20 hari sebelum itu)
+// untuk rata-rata volume 3-vs-20-hari — kalau kurang (saham baru IPO, lama
+// suspend, dll), semua field balik null, tidak menggagalkan baris (row itu
+// nanti otomatis tersaring keluar karena volRatio3v20 null di filter mode).
+async function getExtendedMetrics(code) {
+  const rows = await fetchChartRows(code, 40);
+  if (!rows || rows.length < 23) {
+    return { avgVolume3d: null, avgVolume20d: null, volRatio3v20: null, priceChange3d: null };
+  }
+
+  const price = Number(rows[rows.length - 1].close);
+  const last3 = rows.slice(-3);
+  const prior20 = rows.slice(-23, -3);
+  const avgVolume3d = average(last3.map((r) => Number(r.volume)));
+  const avgVolume20d = average(prior20.map((r) => Number(r.volume)));
+  const volRatio3v20 = avgVolume20d > 0 ? avgVolume3d / avgVolume20d : null;
+  const closeStart3d = Number(rows[rows.length - 3].close);
+  const priceChange3d = closeStart3d > 0 ? ((price - closeStart3d) / closeStart3d) * 100 : null;
+
+  return { avgVolume3d, avgVolume20d, volRatio3v20, priceChange3d };
 }
 
 // Empat mode kriteria — dipilih User SEBELUM scan (bukan filter sesudahnya):
@@ -403,8 +418,9 @@ async function getDailyMetrics(code, lookbackDays = 10) {
 //                  scan-nya lebih cepat (bukan cuma filter tampilan)
 //   value        — value (price x volume) hari ini >= minValue
 //   volume_spike — rata-rata volume 3 hari terakhir >= minRatio x rata-rata
-//                  volume 20 hari sebelumnya (butuh >=23 hari data — lihat
-//                  getDailyMetrics)
+//                  volume 20 hari sebelumnya (butuh >=23 hari data — dihitung
+//                  di STAGE 2, lihat getExtendedMetrics dan blok Stage 2 di
+//                  bawah, HANYA untuk kandidat yang lolos saringan Stage 1)
 //   special_if2x — preset "IF2X" (di-decode dari screenshot screener eksternal
 //                  User, OCR): 1-day price return >= -10%, volume hari ini >=
 //                  2x rata-rata volume 20 hari (BUKAN 3-hari seperti
@@ -422,8 +438,14 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
   }
 
-  const lookbackDays = mode === "volume_spike" || mode === "special_if2x" ? 40 : 10;
-  const pooledResults = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code, lookbackDays));
+  // STAGE 1 — SEMUA mode, SELALU 10 hari (murah), untuk SELURUH universe.
+  // Sebelumnya volume_spike/special_if2x langsung minta 40 hari untuk ~900
+  // saham sekaligus (payload 4x lebih besar per saham, terlepas hampir semua
+  // di antaranya bakal gagal filter likuiditas dasar). Sekarang data 40-hari
+  // (Stage 2, lihat di bawah) HANYA diminta untuk saham yang sudah lolos
+  // saringan likuiditas murah dari Stage 1 — multistage filter, sama
+  // prinsipnya dengan mode "momentum_sniper" dan "special_if2x"-nya freq.
+  const pooledResults = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code, 10));
   const rawResults = pooledResults.filter(Boolean);
 
   // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
@@ -472,6 +494,31 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     const subsectorBatch = await Promise.all(allWithRatio.map((r) => getSubsector(r.code)));
     allWithRatio.forEach((r, i) => {
       r.subsector = subsectorBatch[i];
+    });
+  }
+
+  // STAGE 2 — HANYA mode volume_spike/special_if2x (butuh avgVolume20d/
+  // volRatio3v20 yang perlu 40 hari data). Saring dulu pakai likuiditas MURAH
+  // dari Stage 1 (value >= Rp200jt — sengaja LEBIH LONGGAR dari threshold
+  // akhir mode manapun, supaya tidak salah buang kandidat sebelum data
+  // 40-harinya sendiri sempat dicek) SEBELUM fetch mahal 40-hari. Untuk scan
+  // ~900 saham, biasanya cuma tersisa puluhan-ratusan yang lolos saringan
+  // longgar ini — jauh lebih murah daripada fetch 40-hari untuk semua 900.
+  if (mode === "volume_spike" || mode === "special_if2x") {
+    const stage2Candidates = allWithRatio.filter((r) => r.value >= 200_000_000);
+    const extendedBatch = await runPool(stage2Candidates, CONCURRENCY, (r) => getExtendedMetrics(r.code));
+    stage2Candidates.forEach((r, i) => {
+      const ext = extendedBatch[i];
+      r.avgVolume3d = ext.avgVolume3d;
+      r.avgVolume20d = ext.avgVolume20d;
+      r.volRatio3v20 = ext.volRatio3v20;
+      r.priceChange3d = ext.priceChange3d;
+      // volumeVsMA20 dihitung ulang di sini karena di Stage 1 avgVolume20d
+      // masih null (belum ada data 40-hari) — quietAccumulation juga
+      // bergantung volRatio3v20/priceChange3d yang baru terisi di Stage 2 ini.
+      r.volumeVsMA20 = r.avgVolume20d ? r.volume / r.avgVolume20d : null;
+      r.quietAccumulation =
+        r.volRatio3v20 !== null && r.priceChange3d !== null && r.volRatio3v20 >= 1.0 && r.priceChange3d >= 0 && r.priceChange3d <= 10;
     });
   }
 
