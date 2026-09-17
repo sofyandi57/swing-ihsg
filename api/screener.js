@@ -61,6 +61,53 @@ function getSupabaseAdmin() {
 }
 
 // Kembalikan { scanRun, rows } kalau ada cache valid, atau null kalau tidak ada.
+// "freq_analyzer" (baseline frekuensi transaksi) yang diminta spek Momentum
+// Sniper TIDAK tersedia dari Invezgo (tidak ada histori freq harian, cuma
+// snapshot live hari ini via intraday-data) — jadi baseline dibangun SENDIRI
+// di sini: setiap kali mode ini dijalankan, freq+ticket_size hari ini
+// disimpan ke tabel freq_baseline (lihat saveFreqSnapshot), dan baseline
+// untuk hari-hari berikutnya dihitung dari rata-rata histori yang sudah
+// terkumpul. Cold-start jujur: kalau belum ada histori sama sekali untuk
+// suatu kode, baseline-nya null (frequencyRatio/ticketRatio tidak bisa
+// dihitung) - bukan mengarang angka baseline dari mana pun.
+async function getFreqBaselines(supabase, codes) {
+  if (!supabase || codes.length === 0) return {};
+  const todayStr = ymd(new Date());
+  const { data, error } = await supabase
+    .from("freq_baseline")
+    .select("code, freq, ticket_size")
+    .in("code", codes)
+    .neq("date", todayStr);
+  if (error || !data) return {};
+
+  const byCode = {};
+  for (const row of data) {
+    if (!byCode[row.code]) byCode[row.code] = { freqs: [], tickets: [] };
+    byCode[row.code].freqs.push(Number(row.freq));
+    if (row.ticket_size != null) byCode[row.code].tickets.push(Number(row.ticket_size));
+  }
+  const baselines = {};
+  for (const code of Object.keys(byCode)) {
+    const { freqs, tickets } = byCode[code];
+    baselines[code] = {
+      freqAnalyzer: freqs.length > 0 ? average(freqs) : null,
+      baselineTicket: tickets.length > 0 ? average(tickets) : null,
+      sampleDays: freqs.length,
+    };
+  }
+  return baselines;
+}
+
+async function saveFreqSnapshot(supabase, snapshots) {
+  if (!supabase || snapshots.length === 0) return;
+  const todayStr = ymd(new Date());
+  const rows = snapshots
+    .filter((s) => s && s.freq != null)
+    .map((s) => ({ code: s.code, date: todayStr, freq: s.freq, ticket_size: s.ticketSize }));
+  if (rows.length === 0) return;
+  await supabase.from("freq_baseline").upsert(rows, { onConflict: "code,date" });
+}
+
 async function findCachedRun(supabase, { mode, sector, subsector, minValue, minRatio }) {
   const since = new Date(Date.now() - CACHE_TTL_MINUTES * 60 * 1000).toISOString();
 
@@ -226,6 +273,38 @@ async function getFrequency(code) {
   }
 }
 
+// Snapshot live SATU kode untuk mode "momentum_sniper" — freq, value/volume
+// hari ini, dan bid/offer LEVEL 1 SAJA (best bid/offer lot). PENTING: spesifikasi
+// "Momentum Sniper" yang diminta User menyebut sum_bid_volume(5)/sum_offer_volume(5)
+// (kedalaman order book 5 level) — Invezgo (tier yang dipakai app ini,
+// /analysis/intraday-data) HANYA mengekspos level 1 (bid_lot/offer_lot), tidak
+// ada endpoint depth-5 yang tersedia. Daripada mengarang angka level 2-5,
+// tekanan order book di mode ini SENGAJA cuma pakai level 1 — didokumentasikan
+// eksplisit di UI juga, bukan disembunyikan sebagai "level 5" palsu.
+async function getIntradaySnapshot(code) {
+  try {
+    const d = await invezgoGet(`/analysis/intraday-data/${code}`);
+    const freq = Number(d?.freq);
+    const value = Number(d?.value);
+    const volume = Number(d?.volume);
+    const bidLot = Number(d?.bid_lot);
+    const offerLot = Number(d?.offer_lot);
+    if (!Number.isFinite(freq) || freq <= 0) return null;
+    return {
+      code,
+      freq,
+      value: Number.isFinite(value) ? value : null,
+      volume: Number.isFinite(volume) ? volume : null,
+      bidLot: Number.isFinite(bidLot) ? bidLot : null,
+      offerLot: Number.isFinite(offerLot) ? offerLot : null,
+      bidOfferRatioL1: Number.isFinite(bidLot) && Number.isFinite(offerLot) && offerLot > 0 ? bidLot / offerLot : null,
+      ticketSize: Number.isFinite(value) && freq > 0 ? value / freq : null,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 function average(nums) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
@@ -273,6 +352,9 @@ async function getDailyMetrics(code, lookbackDays = 10) {
   const prevVolume = Number(prev.volume);
   const price = Number(today.close);
   const prevPrice = Number(prev.close);
+  const open = Number(today.open); // dipakai mode "momentum_sniper" (syarat candle hijau: close > open)
+  const low = Number(today.low);
+  const high = Number(today.high);
 
   if (!prevVolume || !Number.isFinite(volume) || !Number.isFinite(prevVolume)) return null;
 
@@ -300,6 +382,9 @@ async function getDailyMetrics(code, lookbackDays = 10) {
     prevVolume,
     price,
     prevPrice,
+    open,
+    low,
+    high,
     avgVolume3d,
     avgVolume20d,
     volRatio3v20,
@@ -416,6 +501,23 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
         r.prevVolume > 0
       )
       .sort((a, b) => b.volumeVsMA20 - a.volumeVsMA20);
+  } else if (mode === "momentum_sniper") {
+    // STAGE 1 (Liquidity Gate + harga) dari spek "Momentum Sniper" User — cuma
+    // pakai data EOD murah (chart harian) untuk mempersempit ~900 saham jadi
+    // top 50 KANDIDAT, SEBELUM fetch data live (freq/order book) per kode di
+    // deep analysis (dilakukan di handler, bukan di sini — lihat runMomentumSniperDeepAnalysis).
+    // Floor value dipakai yang PALING RENDAH di antara 3 strategi (Rp500jt,
+    // dipakai BPJP/BPJS) supaya kandidat BSJP (floor Rp1M) tidak keburu
+    // terbuang di stage ini — floor Rp1M BSJP diterapkan lagi nanti saat
+    // klasifikasi final per strategi.
+    matched = allWithRatio
+      .filter((r) =>
+        r.priceChangePct > 1 &&
+        r.price > r.open &&
+        r.value >= 500_000_000
+      )
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 50);
   } else if (mode === "sektor") {
     matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio)
       .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
@@ -450,9 +552,158 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
   // lot; (2) hasil scan tetap ringkas untuk diproses AI Insight/Bantuan AI
   // (dibatasi MAX_ROWS di api/ai-shortlist.js) — value kecil sering mendominasi
   // jumlah baris tanpa relevansi.
-  matched = matched.filter((r) => r.value >= MIN_VALUE_HARDCODE);
+  // "momentum_sniper" PENGECUALIAN dari floor 1M ini — BPJP/BPJS punya floor
+  // sendiri Rp500jt (lebih rendah), diterapkan di atas dan lagi saat
+  // klasifikasi strategi final. Floor generik di sini akan salah membuang
+  // kandidat BPJP/BPJS legitimate yang value-nya 500jt-1M.
+  if (mode !== "momentum_sniper") {
+    matched = matched.filter((r) => r.value >= MIN_VALUE_HARDCODE);
+  }
 
   return { all: allWithRatio, matched, totalScanned: codes.length };
+}
+
+// Jendela operasi utama per strategi (WIB) — cuma REKOMENDASI/informasi di
+// respons (dipakai UI buat kasih tahu "sedang di luar jam ideal"), BUKAN
+// pemblokiran keras. Spek User: 08:00-10:00 (BPJP/BPJS), 15:00-16:00 (BSJP).
+function getWibHourMinute() {
+  const wib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
+  return { hour: wib.getHours(), minute: wib.getMinutes() };
+}
+
+function inWindow(hour, minute, startH, endH) {
+  const mins = hour * 60 + minute;
+  return mins >= startH * 60 && mins <= endH * 60;
+}
+
+// 0-100, dinormalisasi dari rasio terhadap baseline masing-masing (BUKAN
+// membandingkan angka mentah antar saham) — sesuai instruksi spek: "Normalize
+// variables against their own baselines rather than comparing raw values."
+function normalize(value, cap) {
+  if (value == null || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value / cap)) * 100;
+}
+
+function computeHumanSpeedScore({ frequencyRatio, ticketRatio, volumeRatio, priceChangePct, value, bidOfferRatioL1 }) {
+  const freqScore = normalize(frequencyRatio, 3); // 3x baseline = skor penuh di komponen ini
+  const ticketScore = normalize(ticketRatio, 2); // 2x baseline = skor penuh
+  const volScore = normalize(volumeRatio, 3);
+  const priceScore = normalize(priceChangePct, 5); // +5% = skor penuh
+  const liqScore = value >= 1_000_000_000 ? 100 : value >= 500_000_000 ? 60 : 30;
+  const orderScore = bidOfferRatioL1 != null ? normalize(bidOfferRatioL1 - 1, 1) : 0; // rasio 2.0x = skor penuh
+
+  return Math.round(
+    0.25 * freqScore + 0.2 * ticketScore + 0.15 * volScore + 0.15 * priceScore + 0.1 * liqScore + 0.15 * orderScore
+  );
+}
+
+// Deep analysis Momentum Sniper — HANYA dipanggil untuk shortlist (top 50)
+// hasil Stage 1 gate di runScan(), bukan universe penuh (lihat komentar di
+// getIntradaySnapshot soal kenapa ini mahal per-kode). Mengembalikan top 15
+// (atau lebih sedikit kalau yang lolos klasifikasi strategi kurang dari itu)
+// diurutkan Human-Speed Score tertinggi.
+async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
+  if (stage1Candidates.length === 0) return [];
+
+  const snapshots = await runPool(stage1Candidates, 15, (r) => getIntradaySnapshot(r.code));
+  await saveFreqSnapshot(supabase, snapshots);
+  const baselines = await getFreqBaselines(supabase, stage1Candidates.map((r) => r.code));
+
+  const { hour, minute } = getWibHourMinute();
+  const morningWindow = inWindow(hour, minute, 8, 10);
+  const afternoonWindow = inWindow(hour, minute, 15, 16);
+
+  const enriched = stage1Candidates
+    .map((r, i) => {
+      const snap = snapshots[i];
+      if (!snap) return null; // gagal ambil data live — skip, jangan gagalkan seluruh scan
+
+      const baseline = baselines[r.code] || { freqAnalyzer: null, baselineTicket: null, sampleDays: 0 };
+      const frequencyRatio = baseline.freqAnalyzer ? snap.freq / baseline.freqAnalyzer : null;
+      const ticketRatio = baseline.baselineTicket && snap.ticketSize ? snap.ticketSize / baseline.baselineTicket : null;
+
+      // Klasifikasi strategi — formula PERSIS dari spek User, kecuali syarat
+      // sum_bid_volume(5)/sum_offer_volume(5) (kedalaman order book 5 level)
+      // yang DIGANTI level 1 saja (lihat catatan di getIntradaySnapshot) —
+      // ambang batasnya sedikit dinaikkan (x1.2 makin dipertegas jadi syarat
+      // sendiri) supaya level-1 tetap jadi sinyal yang cukup ketat meski lebih
+      // sempit dari level-5 aslinya.
+      const strategies = [];
+      const hasBaseline = frequencyRatio !== null;
+      if (
+        hasBaseline &&
+        r.priceChangePct > 1 &&
+        r.price > r.open &&
+        frequencyRatio > 3 &&
+        snap.volume != null && snap.freq > 0 && snap.volume / snap.freq > 500 && // "Share Ticket": volume > freq*500
+        snap.value > 500_000_000 &&
+        snap.bidOfferRatioL1 !== null && snap.bidOfferRatioL1 > 1.2
+      ) {
+        strategies.push("BPJP");
+      }
+      if (
+        hasBaseline &&
+        r.priceChangePct > 1 &&
+        r.price > r.open &&
+        frequencyRatio > 2 &&
+        snap.volume != null && snap.freq > 0 && snap.volume / snap.freq > 500 &&
+        snap.value != null && snap.value > 500_000_000 &&
+        snap.bidOfferRatioL1 !== null && snap.bidOfferRatioL1 > 1
+      ) {
+        strategies.push("BPJS");
+      }
+      if (
+        hasBaseline &&
+        r.priceChangePct > 1 &&
+        r.price > r.open &&
+        frequencyRatio > 2 &&
+        snap.volume != null && snap.freq > 0 && snap.volume / snap.freq > 500 &&
+        snap.value != null && snap.value > 1_000_000_000 &&
+        snap.bidOfferRatioL1 !== null && snap.bidOfferRatioL1 > 1
+      ) {
+        strategies.push("BSJP");
+      }
+
+      const closeLocation = r.high > r.low ? (r.price - r.low) / (r.high - r.low) : null;
+
+      return {
+        code: r.code,
+        price: r.price,
+        priceChangePct: r.priceChangePct,
+        value: snap.value,
+        volume: snap.volume,
+        freq: snap.freq,
+        freqAnalyzer: baseline.freqAnalyzer,
+        frequencyRatio,
+        ticketSize: snap.ticketSize,
+        ticketRatio,
+        volumeRatio: r.volumeRatio,
+        bidLot: snap.bidLot,
+        offerLot: snap.offerLot,
+        bidOfferRatioL1: snap.bidOfferRatioL1,
+        closeLocation,
+        baselineSampleDays: baseline.sampleDays,
+        strategies,
+        recommendedWindow: {
+          morningActive: morningWindow,
+          afternoonActive: afternoonWindow,
+        },
+        humanSpeedScore: computeHumanSpeedScore({
+          frequencyRatio,
+          ticketRatio,
+          volumeRatio: r.volumeRatio,
+          priceChangePct: r.priceChangePct,
+          value: snap.value,
+          bidOfferRatioL1: snap.bidOfferRatioL1,
+        }),
+      };
+    })
+    .filter(Boolean)
+    .filter((r) => r.strategies.length > 0)
+    .sort((a, b) => b.humanSpeedScore - a.humanSpeedScore)
+    .slice(0, 15);
+
+  return enriched;
 }
 
 async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso, criteria }) {
@@ -546,7 +797,7 @@ export default async function handler(req, res) {
   await loadSettingsOverrides();
 
   const mode = req.query?.mode || "global";
-  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x"]);
+  const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x", "momentum_sniper"]);
   if (!VALID_MODES.has(mode)) {
     res.status(400).json({ error: `mode '${mode}' tidak valid. Pilihan: ${[...VALID_MODES].join(", ")}.` });
     return;
@@ -576,7 +827,10 @@ export default async function handler(req, res) {
     // scan_results (lihat saveToSupabase), jadi cache-hit akan kehilangan freq.
     // Ini mode "special/manual" yang dijalankan sesekali, bukan scan rutin
     // banyak user, jadi selalu fresh tidak masalah dari sisi biaya API.
-    const supabaseForCache = mode === "special_if2x" ? null : getSupabaseAdmin();
+    // "momentum_sniper" juga TIDAK pakai cache — datanya live (freq/order book
+    // detik-ke-detik), sengaja selalu fresh tiap dijalankan (spek: "on-demand,
+    // not continuously polling").
+    const supabaseForCache = mode === "special_if2x" || mode === "momentum_sniper" ? null : getSupabaseAdmin();
     if (supabaseForCache) {
       const cached = await findCachedRun(supabaseForCache, criteria);
       if (cached) {
@@ -596,13 +850,25 @@ export default async function handler(req, res) {
       }
     }
 
-    const { all, matched, totalScanned } = await runScan({
+    const { all, matched: stage1Matched, totalScanned } = await runScan({
       mode,
       sector: req.query?.sector,
       subsector: req.query?.subsector,
       minValue: req.query?.minValue,
       minRatio: req.query?.minRatio,
     });
+
+    // Momentum Sniper: stage1Matched di atas baru top-50 KANDIDAT (stage 1 —
+    // liquidity gate murah, EOD). Deep analysis (freq/order book live, per
+    // kandidat) dijalankan di sini, HASIL AKHIRNYA (top 5-15 yang lolos
+    // klasifikasi BPJP/BPJS/BSJP) yang jadi `matched` final — bukan top-50
+    // mentah — supaya scan_results/history juga konsisten dengan apa yang
+    // ditampilkan ke User.
+    const matched =
+      mode === "momentum_sniper"
+        ? await runMomentumSniperDeepAnalysis(stage1Matched, getSupabaseAdmin())
+        : stage1Matched;
+
     const durationMs = Date.now() - startedAt;
 
     // Simpan ke Supabase — kalau gagal, tetap kembalikan hasil scan ke browser

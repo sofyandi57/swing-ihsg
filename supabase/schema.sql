@@ -193,6 +193,26 @@ create table if not exists auth_activity_log (
 
 create index if not exists idx_auth_activity_log_created_at on auth_activity_log(created_at desc);
 
+-- freq_baseline — histori frekuensi transaksi (freq) + rata-rata nilai per
+-- transaksi (ticket_size) HARIAN per kode, dipakai fitur "Momentum Sniper"
+-- (mode scan momentum_sniper di api/screener.js) untuk menghitung baseline
+-- ("freq_analyzer" di spek asli User) sendiri — Invezgo TIDAK punya endpoint
+-- histori freq harian, cuma snapshot live hari ini, jadi baseline dibangun
+-- dari data yang terkumpul tiap kali mode ini dijalankan. Satu baris per
+-- kode per tanggal — di-upsert (ON CONFLICT kode+tanggal), bukan insert
+-- berulang di hari yang sama.
+create table if not exists freq_baseline (
+  code text not null,
+  date date not null,
+  freq bigint not null,
+  ticket_size numeric,
+  updated_at timestamptz not null default now(),
+  primary key (code, date)
+);
+
+create index if not exists idx_freq_baseline_code on freq_baseline(code);
+
 alter table app_admins enable row level security;
 alter table app_settings enable row level security;
 alter table auth_activity_log enable row level security;
+alter table freq_baseline enable row level security;

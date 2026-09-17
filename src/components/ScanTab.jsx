@@ -6,6 +6,12 @@ const CRITERIA = [
   { id: "sektor", icon: "🏷️", label: "Sektor & Subsektor", desc: "Pilih sektor (dan opsional subsektor) dari dropdown." },
   { id: "value", icon: "💰", label: "Berdasarkan Value", desc: "Nilai transaksi hari ini minimum sekian Rupiah." },
   { id: "volume_spike", icon: "📈", label: "Volume Spike", desc: "Rata-rata volume 3 hari terakhir jauh di atas rata-rata 20 hari." },
+  {
+    id: "momentum_sniper",
+    icon: "🎯",
+    label: "Momentum Sniper (BPJP/BPJS/BSJP)",
+    desc: "Percepatan frekuensi transaksi + ticket size + volume + harga. Top 5-15 kandidat, diklasifikasi per strategi.",
+  },
 ];
 
 const SORT_FIELDS_BY_MODE = {
@@ -32,6 +38,17 @@ const SORT_FIELDS_BY_MODE = {
     { id: "value", label: "Value" },
     { id: "freq", label: "Frekuensi" },
   ],
+  momentum_sniper: [
+    { id: "humanSpeedScore", label: "Human-Speed Score" },
+    { id: "frequencyRatio", label: "Rasio Frekuensi" },
+    { id: "value", label: "Value" },
+  ],
+};
+
+const STRATEGY_INFO = {
+  BPJP: { desc: "Buy Pagi → Sell Pagi" },
+  BPJS: { desc: "Buy Pagi → Sell Sore" },
+  BSJP: { desc: "Buy Sore → Sell Pagi Berikutnya" },
 };
 
 function formatNumber(n) {
@@ -162,6 +179,85 @@ function ResultCard({ row, mode, aiPick }) {
       </div>
       <div style={{ marginTop: 10 }}>
         <AddToWatchlistButton code={row.code} notes={buildScanNote(row, mode)} />
+      </div>
+    </div>
+  );
+}
+
+// Kartu ala "alert" untuk Momentum Sniper — bentuk datanya beda total dari
+// ResultCard (freq/ticket/order-book, bukan volumeRatio/sector biasa), jadi
+// dipisah komponennya sendiri, bukan dipaksa masuk ResultCard.
+function MomentumSniperCard({ row }) {
+  const isUp = row.priceChangePct >= 0;
+  const notes =
+    `Momentum Sniper (${row.strategies.join("/")}) — freq ${row.frequencyRatio != null ? row.frequencyRatio.toFixed(2) + "x baseline" : "baseline belum cukup data"}, ` +
+    `ticket ${row.ticketRatio != null ? row.ticketRatio.toFixed(2) + "x" : "n/a"}, Human-Speed Score ${row.humanSpeedScore}/100.`;
+
+  return (
+    <div className="result-card">
+      <div className="result-card-top">
+        <span className="result-code">{row.code}</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {row.strategies.map((s) => (
+            <span key={s} className="ratio-pill" title={STRATEGY_INFO[s]?.desc}>
+              {s}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="sub" style={{ marginBottom: 8 }}>
+        Harga {formatNumber(row.price)} ({isUp ? "+" : ""}
+        {row.priceChangePct.toFixed(2)}%) · Human-Speed Score{" "}
+        <b style={{ color: "var(--accent)" }}>{row.humanSpeedScore}/100</b>
+      </div>
+
+      <div className="result-grid">
+        <div className="result-metric">
+          <span className="result-metric-label">Frekuensi</span>
+          <span className="result-metric-value">
+            {formatNumber(row.freq)}
+            {row.frequencyRatio != null && ` (${row.frequencyRatio.toFixed(2)}x)`}
+          </span>
+        </div>
+        <div className="result-metric">
+          <span className="result-metric-label">Ticket Size</span>
+          <span className="result-metric-value">
+            {row.ticketSize != null ? formatCompact(row.ticketSize) : "—"}
+            {row.ticketRatio != null && ` (${row.ticketRatio.toFixed(2)}x)`}
+          </span>
+        </div>
+        <div className="result-metric">
+          <span className="result-metric-label">Value</span>
+          <span className="result-metric-value">{formatCompact(row.value)}</span>
+        </div>
+        <div className="result-metric">
+          <span className="result-metric-label">Order Book (L1)</span>
+          <span className="result-metric-value">
+            {row.bidOfferRatioL1 != null ? `${row.bidOfferRatioL1.toFixed(2)}x` : "—"}
+          </span>
+        </div>
+        {row.closeLocation != null && (
+          <div className="result-metric">
+            <span className="result-metric-label">Close Location</span>
+            <span className="result-metric-value">{(row.closeLocation * 100).toFixed(0)}%</span>
+          </div>
+        )}
+        <div className="result-metric">
+          <span className="result-metric-label">Sampel Baseline</span>
+          <span className="result-metric-value">{row.baselineSampleDays} hari</span>
+        </div>
+      </div>
+
+      {row.frequencyRatio === null && (
+        <div className="cross-miss" style={{ marginTop: 8 }}>
+          ⚠ Baseline frekuensi belum cukup data (histori dikumpulkan otomatis tiap scan —
+          jalankan scan ini beberapa hari untuk baseline yang stabil).
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        <AddToWatchlistButton code={row.code} notes={notes} />
       </div>
     </div>
   );
@@ -348,6 +444,7 @@ export default function ScanTab() {
 
   const canRun =
     criteriaMode === "global" ||
+    criteriaMode === "momentum_sniper" ||
     (criteriaMode === "sektor" && selectedSector) ||
     (criteriaMode === "value" && (useSpecialIf2x || minValue)) ||
     (criteriaMode === "volume_spike" && minRatio);
@@ -387,6 +484,18 @@ export default function ScanTab() {
               ← Ganti Kriteria
             </button>
           </div>
+
+          {criteriaMode === "momentum_sniper" && (
+            <p className="sub">
+              Stage 1: ~900 saham disaring cepat (harga naik + candle hijau + value ≥ Rp500jt) jadi
+              top 50 kandidat. Stage 2: tiap kandidat dicek live (frekuensi transaksi, ticket size,
+              order book level 1) lalu diklasifikasi BPJP/BPJS/BSJP. Baseline frekuensi dibangun
+              otomatis dari histori tiap kali scan ini dijalankan — akurasi membaik setelah beberapa
+              hari pemakaian. Jendela ideal: 08:00–10:00 (BPJP/BPJS) dan 15:00–16:00 (BSJP), tapi
+              tetap bisa dijalankan kapan saja. <b>Bukan rekomendasi transaksi</b> — alat bantu baca
+              percepatan aktivitas pasar.
+            </p>
+          )}
 
           {criteriaMode === "sektor" && (
             <>
@@ -609,9 +718,11 @@ export default function ScanTab() {
           )}
 
           <div className="result-list">
-            {sortedResults.map((row) => (
-              <ResultCard key={row.code} row={row} mode={meta?.mode || criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
-            ))}
+            {(meta?.mode || criteriaMode) === "momentum_sniper"
+              ? sortedResults.map((row) => <MomentumSniperCard key={row.code} row={row} />)
+              : sortedResults.map((row) => (
+                  <ResultCard key={row.code} row={row} mode={meta?.mode || criteriaMode} aiPick={aiPicks.find((p) => p.code === row.code)} />
+                ))}
           </div>
         </>
       )}
