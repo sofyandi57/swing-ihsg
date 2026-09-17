@@ -23,12 +23,18 @@ const API_KEY = process.env.INVEZGO_API_KEY;
 
 const VALID_TIMEFRAMES = new Set(["1", "5", "15", "30", "60", "D", "W", "M"]);
 
+// Rentang tanggal REQUEST jauh lebih pendek dari batas maksimal yang
+// didokumentasikan Invezgo (1 menit boleh maks 3 bulan, dst) — data menit-per-
+// menit riil biasanya cuma disimpan beberapa hari-minggu terakhir oleh
+// provider data manapun, walau kuota API-nya mengizinkan rentang lebih jauh.
+// Minta rentang sependek mungkin dulu supaya kemungkinan besar dapat data,
+// bukan 204 kosong karena melampaui retensi riil.
 const LOOKBACK_DAYS_BY_TIMEFRAME = {
-  "1": 30, // default request jendela pendek meski limit API 3 bulan — payload tetap ringan untuk 1 menit
-  "5": 60,
-  "15": 180,
-  "30": 365,
-  "60": 365,
+  "1": 7,
+  "5": 14,
+  "15": 30,
+  "30": 60,
+  "60": 90,
   D: 365,
   W: 730,
   M: 730,
@@ -75,11 +81,19 @@ export default async function handler(req, res) {
     });
 
     if (resp.status === 204) {
-      res.status(200).json({ code, timeframe, candles: [], note: "Data tidak tersedia untuk kode/periode ini." });
+      const isIntraday = timeframe !== "D" && timeframe !== "W" && timeframe !== "M";
+      res.status(200).json({
+        code,
+        timeframe,
+        candles: [],
+        note: isIntraday
+          ? "Data tidak tersedia untuk kombinasi kode/timeframe/periode ini — untuk timeframe menit-per-menit, kemungkinan data historis sudah tidak tersimpan sejauh itu, atau paket API Invezgo Anda tidak termasuk data intraday (butuh tier 'Advance')."
+          : "Data tidak tersedia untuk kode/periode ini.",
+      });
       return;
     }
     if (resp.status === 401) throw new Error("401: API key tidak valid.");
-    if (resp.status === 402) throw new Error("402: Paket subscription tidak cukup untuk multi-timeframe chart.");
+    if (resp.status === 402) throw new Error("402: Paket API Invezgo Anda tidak termasuk data multi-timeframe intraday — butuh tier 'Advance'. Cek di dashboard Invezgo Anda.");
     if (resp.status === 422) throw new Error("422: Kode saham tidak valid.");
     if (resp.status === 429) throw new Error("429: Rate limit tercapai.");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);

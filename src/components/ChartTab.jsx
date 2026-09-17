@@ -18,18 +18,69 @@ function toUnixTime(dateStr) {
   return Math.floor(new Date(dateStr).getTime() / 1000);
 }
 
+// Sama persis dengan technical-analysis.js — swing high/low dari 80 candle
+// terakhir. Dihitung di BROWSER (bukan lewat API lagi) supaya garis langsung
+// tergambar begitu chart dimuat, tanpa menunggu klik tombol terpisah.
+function findSupportResistance(candles, currentPrice, lookback = 3) {
+  const window = candles.slice(-80);
+  const swingHighs = [];
+  const swingLows = [];
+
+  for (let i = lookback; i < window.length - lookback; i++) {
+    const slice = window.slice(i - lookback, i + lookback + 1);
+    const current = window[i];
+    if (current.high === Math.max(...slice.map((c) => c.high))) swingHighs.push(current.high);
+    if (current.low === Math.min(...slice.map((c) => c.low))) swingLows.push(current.low);
+  }
+
+  const resistances = [...new Set(swingHighs)].filter((h) => h > currentPrice).sort((a, b) => a - b);
+  const supports = [...new Set(swingLows)].filter((l) => l < currentPrice).sort((a, b) => b - a);
+
+  return {
+    nearestSupport: supports[0] ?? null,
+    nearestResistance: resistances[0] ?? null,
+  };
+}
+
+// Fibonacci retracement standar antara swing high dan swing low TERTINGGI/
+// TERENDAH dalam 80 candle terakhir (bukan yang "nearest" seperti support/
+// resistance) — level 0%/100% di titik ekstrem, sisanya di antaranya.
+const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+
+function computeFibonacci(candles) {
+  const window = candles.slice(-80);
+  if (window.length < 10) return null;
+
+  let swingHigh = -Infinity;
+  let swingLow = Infinity;
+  for (const c of window) {
+    if (c.high > swingHigh) swingHigh = c.high;
+    if (c.low < swingLow) swingLow = c.low;
+  }
+  if (!Number.isFinite(swingHigh) || !Number.isFinite(swingLow) || swingHigh <= swingLow) return null;
+
+  const range = swingHigh - swingLow;
+  return FIB_RATIOS.map((ratio) => ({
+    ratio,
+    price: swingHigh - range * ratio,
+  }));
+}
+
 export default function ChartTab() {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
+  const priceLinesRef = useRef([]); // garis S/R + Fibonacci yang sedang tergambar — perlu di-remove manual sebelum gambar ulang
 
   const [code, setCode] = useState("BBCA");
   const [inputValue, setInputValue] = useState("BBCA");
   const [timeframe, setTimeframe] = useState("D");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
+  const [emptyNote, setEmptyNote] = useState("");
   const [lastCandle, setLastCandle] = useState(null);
+  const [showOverlay, setShowOverlay] = useState(true);
   const candlesRef = useRef([]);
 
   const [taStatus, setTaStatus] = useState("idle"); // idle | loading | done | error
@@ -83,9 +134,75 @@ export default function ChartTab() {
     };
   }, []);
 
+  function clearOverlay() {
+    priceLinesRef.current.forEach((line) => {
+      try {
+        seriesRef.current?.removePriceLine(line);
+      } catch (e) {
+        // chart/series sudah di-remove (unmount) — abaikan
+      }
+    });
+    priceLinesRef.current = [];
+  }
+
+  function drawOverlay(candles) {
+    clearOverlay();
+    if (!showOverlay || candles.length < 20) return;
+
+    const currentPrice = candles[candles.length - 1].close;
+    const { nearestSupport, nearestResistance } = findSupportResistance(candles, currentPrice);
+    const fib = computeFibonacci(candles);
+
+    const lines = [];
+    if (nearestSupport) {
+      lines.push(
+        seriesRef.current.createPriceLine({
+          price: nearestSupport,
+          color: "#22c55e",
+          lineWidth: 2,
+          lineStyle: 2, // dashed
+          axisLabelVisible: true,
+          title: "Support",
+        })
+      );
+    }
+    if (nearestResistance) {
+      lines.push(
+        seriesRef.current.createPriceLine({
+          price: nearestResistance,
+          color: "#ef4444",
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: "Resistance",
+        })
+      );
+    }
+    if (fib) {
+      fib.forEach(({ ratio, price }) => {
+        // 0% dan 100% sudah terwakili sebagai swing high/low — tetap digambar
+        // tipis supaya konteks range-nya kelihatan, tapi warna lebih redup.
+        const isEdge = ratio === 0 || ratio === 1;
+        lines.push(
+          seriesRef.current.createPriceLine({
+            price,
+            color: isEdge ? "#5f636c" : "#8b6bff",
+            lineWidth: 1,
+            lineStyle: 3, // dotted
+            axisLabelVisible: true,
+            title: `Fib ${(ratio * 100).toFixed(1)}%`,
+          })
+        );
+      });
+    }
+    priceLinesRef.current = lines;
+  }
+
   async function loadChart(symbolCode, tf) {
     setStatus("loading");
     setError("");
+    setEmptyNote("");
+    clearOverlay();
 
     try {
       const resp = await authFetch(`/api/stock-chart?code=${encodeURIComponent(symbolCode)}&timeframe=${tf}`);
@@ -100,6 +217,7 @@ export default function ChartTab() {
       if (candles.length === 0) {
         setStatus("done");
         setLastCandle(null);
+        setEmptyNote(json.note || "");
         seriesRef.current?.setData([]);
         volumeSeriesRef.current?.setData([]);
         return;
@@ -121,6 +239,7 @@ export default function ChartTab() {
       seriesRef.current?.setData(candleData);
       volumeSeriesRef.current?.setData(volumeData);
       chartRef.current?.timeScale().fitContent();
+      drawOverlay(candles);
 
       setLastCandle(candles[candles.length - 1]);
       setStatus("done");
@@ -134,6 +253,11 @@ export default function ChartTab() {
     loadChart(code, timeframe);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, timeframe]);
+
+  useEffect(() => {
+    if (candlesRef.current.length > 0) drawOverlay(candlesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showOverlay]);
 
   function handleSearch(e) {
     e.preventDefault();
@@ -207,6 +331,11 @@ export default function ChartTab() {
             </button>
           ))}
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+          <input type="checkbox" checked={showOverlay} onChange={(e) => setShowOverlay(e.target.checked)} />
+          📐 Tampilkan Support/Resistance + Fibonacci di chart
+        </label>
       </div>
 
       {error && <div className="error-box">Gagal memuat chart: {error}</div>}
@@ -229,7 +358,10 @@ export default function ChartTab() {
           </div>
         )}
         {status === "done" && !lastCandle && (
-          <div className="state-box">Tidak ada data candlestick untuk {code} pada timeframe ini.</div>
+          <div className="state-box">
+            Tidak ada data candlestick untuk {code} pada timeframe ini.
+            {emptyNote && <div style={{ marginTop: 8, fontSize: 12 }}>{emptyNote}</div>}
+          </div>
         )}
       </div>
 
