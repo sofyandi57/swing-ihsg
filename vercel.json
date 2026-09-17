@@ -19,6 +19,9 @@
     },
     "api/admin.js": {
       "maxDuration": 20
+    },
+    "api/intraday-value.js": {
+      "maxDuration": 30
     }
   }
 }

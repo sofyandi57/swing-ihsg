@@ -44,6 +44,15 @@ alter table scan_results add column if not exists sector text;
 alter table scan_results add column if not exists subsector text;
 alter table scan_results add column if not exists value numeric;
 
+-- Kolom kriteria "akumulasi diam-diam" (volume 3 hari terakhir rata-rata lebih
+-- tinggi dari volume 20 hari sebelumnya, TAPI harga cuma naik 0-10%) — beda
+-- dari volume_ratio yang menangkap lonjakan tajam 1-2 hari.
+alter table scan_results add column if not exists avg_volume_3d numeric;
+alter table scan_results add column if not exists avg_volume_20d numeric;
+alter table scan_results add column if not exists vol_ratio_3v20 numeric;
+alter table scan_results add column if not exists price_change_3d numeric;
+alter table scan_results add column if not exists quiet_accumulation boolean;
+
 -- Index untuk query histori yang umum: "tampilkan semua run terbaru",
 -- "tampilkan semua hasil untuk saham X dari waktu ke waktu"
 create index if not exists idx_scan_results_run_id on scan_results(run_id);

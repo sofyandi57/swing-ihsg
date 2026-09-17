@@ -105,9 +105,18 @@ async function getSubsector(code) {
   }
 }
 
-async function getLastTwoDays(code) {
+function average(nums) {
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+// Ambil ~40 hari kalender (bukan cuma 10) supaya cukup dapat >=23 hari
+// PERDAGANGAN — dibutuhkan untuk kriteria "akumulasi diam-diam": rata-rata
+// volume 3 hari terakhir vs rata-rata volume 20 hari SEBELUM itu, plus
+// perubahan harga 3 hari terakhir. Satu kali fetch per saham tetap dipakai
+// untuk semua metrik (2-hari DAN 3-vs-20-hari) — tidak menambah panggilan API.
+async function getDailyMetrics(code) {
   const to = new Date();
-  const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000); // buffer 10 hari
+  const from = new Date(to.getTime() - 40 * 24 * 60 * 60 * 1000);
 
   let chart;
   try {
@@ -145,7 +154,35 @@ async function getLastTwoDays(code) {
 
   if (!prevVolume || !Number.isFinite(volume) || !Number.isFinite(prevVolume)) return null;
 
-  return { code, volume, prevVolume, price, prevPrice };
+  // Kriteria "akumulasi diam-diam" — butuh minimal 23 hari perdagangan
+  // (3 hari terakhir + 20 hari sebelum itu). Kalau data kurang (saham baru
+  // IPO, suspend lama, dll), field ini null — tidak menggagalkan baris.
+  let avgVolume3d = null;
+  let avgVolume20d = null;
+  let volRatio3v20 = null;
+  let priceChange3d = null;
+
+  if (rows.length >= 23) {
+    const last3 = rows.slice(-3);
+    const prior20 = rows.slice(-23, -3);
+    avgVolume3d = average(last3.map((r) => Number(r.volume)));
+    avgVolume20d = average(prior20.map((r) => Number(r.volume)));
+    volRatio3v20 = avgVolume20d > 0 ? avgVolume3d / avgVolume20d : null;
+    const closeStart3d = Number(rows[rows.length - 3].close);
+    priceChange3d = closeStart3d > 0 ? ((price - closeStart3d) / closeStart3d) * 100 : null;
+  }
+
+  return {
+    code,
+    volume,
+    prevVolume,
+    price,
+    prevPrice,
+    avgVolume3d,
+    avgVolume20d,
+    volRatio3v20,
+    priceChange3d,
+  };
 }
 
 async function runFullScan() {
@@ -153,12 +190,16 @@ async function runFullScan() {
   const codes = stockList.map((s) => s.code);
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
 
-  const pooledResults = await runPool(codes, CONCURRENCY, getLastTwoDays);
+  const pooledResults = await runPool(codes, CONCURRENCY, getDailyMetrics);
   const rawResults = pooledResults.filter(Boolean);
 
   // Hitung rasio & tandai lolos filter atau tidak — INI SEMUA SAHAM, belum di-slice.
   // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
   // nilai transaksi hari ini (price x volume), dipakai untuk filter "value" di UI.
+  // quietAccumulation: volume 3 hari terakhir rata-rata LEBIH TINGGI dari volume
+  // 20 hari sebelumnya, TAPI harga cuma naik 0-10% (bukan lonjakan tajam) — pola
+  // "akumulasi diam-diam", beda dari volumeRatio (lonjakan 1-2 hari, biasanya
+  // disertai harga bergerak tajam juga).
   const allWithRatio = rawResults.map((r) => {
     const volumeRatio = r.volume / r.prevVolume;
     const priceChangePct = ((r.price - r.prevPrice) / r.prevPrice) * 100;
@@ -166,11 +207,18 @@ async function runFullScan() {
       volumeRatio >= MIN_VOLUME_RATIO &&
       r.prevVolume >= MIN_PREV_VOLUME &&
       r.price >= MIN_PRICE;
+    const quietAccumulation =
+      r.volRatio3v20 !== null &&
+      r.priceChange3d !== null &&
+      r.volRatio3v20 >= 1.0 &&
+      r.priceChange3d >= 0 &&
+      r.priceChange3d <= 10;
     return {
       ...r,
       volumeRatio,
       priceChangePct,
       passedFilter,
+      quietAccumulation,
       sector: sectorByCode.get(r.code) || null,
       value: r.price * r.volume,
     };
@@ -233,6 +281,11 @@ async function saveToSupabase({ all, filtered, totalScanned, durationMs, scanned
     sector: r.sector,
     subsector: r.subsector || null, // hanya terisi untuk baris yang lolos filter
     value: r.value,
+    avg_volume_3d: r.avgVolume3d,
+    avg_volume_20d: r.avgVolume20d,
+    vol_ratio_3v20: r.volRatio3v20,
+    price_change_3d: r.priceChange3d,
+    quiet_accumulation: r.quietAccumulation,
   }));
 
   const INSERT_BATCH_SIZE = 200;
@@ -285,6 +338,7 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     res.status(200).json({
       data: filtered,
+      allData: all, // untuk mode filter "Global (950+ Saham)" — semua saham yang berhasil di-scan
       totalScanned,
       scannedAt: startedAt,
       durationMs,
