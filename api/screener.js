@@ -392,14 +392,25 @@ function average(nums) {
 // penuh itu 2x lebih mahal dari yang dibutuhkan ARA Hunter di Stage 1.
 async function getIntradayPriceSnapshotsBatch(codes) {
   const map = new Map();
+  let chunkErrorCount = 0;
+  let lastChunkError = null;
   await runPool(chunkArray(codes, BATCH_SIZE), BATCH_FETCH_CONCURRENCY, async (group) => {
     try {
       const results = await invezgoGet(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
       if (Array.isArray(results)) for (const r of results) map.set(r.code, r);
     } catch (e) {
-      // skip chunk ini, lanjut chunk berikutnya
+      // Chunk gagal (429/5xx/timeout dll) — lanjut chunk berikutnya SUPAYA satu
+      // chunk gagal tidak menggagalkan seluruh scan, tapi catat errornya:
+      // kalau SEMUA chunk gagal (map tetap kosong), caller butuh info ini
+      // untuk membedakan "batch fetch total gagal" dari "threshold ketat"
+      // (dulu di sini errornya ditelan diam-diam, jadi 0 hasil terlihat sama
+      // dengan filter ketat padahal sebenarnya data tidak pernah masuk).
+      chunkErrorCount += 1;
+      lastChunkError = String(e?.message || e);
     }
   });
+  map.__chunkErrorCount = chunkErrorCount;
+  map.__lastChunkError = lastChunkError;
   return map;
 }
 
@@ -617,6 +628,8 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
   // pengganti. r.prevVolume sengaja null di semua mode sekarang (kolom
   // scan_results terkait juga akan null, bukan dihapus dari skema).
   const snapMap = await getIntradayPriceSnapshotsBatch(codes);
+  const batchFetchChunkErrorCount = snapMap.__chunkErrorCount || 0;
+  const batchFetchLastError = snapMap.__lastChunkError || null;
   const rawResults = codes
     .map((code) => {
       const d = snapMap.get(code);
@@ -801,7 +814,13 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     matched = matched.filter((r) => r.value >= MIN_VALUE_HARDCODE);
   }
 
-  return { all: allWithRatio, matched, totalScanned: codes.length };
+  return {
+    all: allWithRatio,
+    matched,
+    totalScanned: codes.length,
+    batchFetchChunkErrorCount,
+    batchFetchLastError,
+  };
 }
 
 // Jendela operasi utama per strategi (WIB) — cuma REKOMENDASI/informasi di
@@ -1200,7 +1219,13 @@ export default async function handler(req, res) {
       }
     }
 
-    const { all, matched: stage1Matched, totalScanned } =
+    const {
+      all,
+      matched: stage1Matched,
+      totalScanned,
+      batchFetchChunkErrorCount = 0,
+      batchFetchLastError = null,
+    } =
       mode === "ara_hunter"
         ? await runAraHunterScan()
         : await runScan({
@@ -1242,6 +1267,19 @@ export default async function handler(req, res) {
         passedFreqFloor: all.filter((r) => r.freq >= MIN_FREQ).length,
         currentThresholds: { minValueActivity: MIN_VALUE_ACTIVITY, minFreq: MIN_FREQ, minPrice: MIN_PRICE },
         top5ByValue,
+        // batchFetchChunkErrorCount > 0 dengan totalRowsWithData 0 = akar
+        // masalah BUKAN threshold ketat, tapi batch fetch ke Invezgo gagal
+        // total (semua chunk /batch/intraday-data error) — dulu error ini
+        // ditelan diam-diam sehingga "0 cocok kriteria" terlihat sama dengan
+        // "data OK tapi memang tidak ada yang lolos".
+        batchFetchChunkErrorCount,
+        batchFetchLastError,
+        hint:
+          all.length === 0 && batchFetchChunkErrorCount > 0
+            ? `Batch fetch ke Invezgo gagal total (${batchFetchChunkErrorCount} chunk error) — bukan threshold terlalu ketat. Error terakhir: ${batchFetchLastError}`
+            : all.length === 0
+              ? "Semua chunk batch fetch sukses tapi tidak menghasilkan baris (kemungkinan data Invezgo kosong/null untuk seluruh universe saat ini, misal di luar jam bursa)."
+              : undefined,
       };
     }
 
