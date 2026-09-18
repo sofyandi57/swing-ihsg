@@ -326,26 +326,34 @@ function chunkArray(arr, size) {
 // Daripada mengarang angka level 2-5, tekanan order book di mode ini SENGAJA
 // cuma pakai level 1 — didokumentasikan eksplisit di UI juga, bukan
 // disembunyikan sebagai "level 5" palsu.
+// Chunk batch di-fetch PARALEL (concurrency terbatas, lihat runPool), BUKAN
+// sekuensial satu-satu — untuk universe ~1200 saham itu ~120 chunk, kalau
+// sekuensial bisa 30-60+ detik sendirian (risiko timeout function, gejala
+// yang User laporkan: tombol "Scan Sekarang" macet di "Memindai..." tanpa
+// hasil). Concurrency 15 dipilih sama dengan CONCURRENCY default scan lain —
+// cukup cepat tanpa membombardir Invezgo 120 request bersamaan sekaligus.
+const BATCH_FETCH_CONCURRENCY = 15;
+
 async function getIntradaySnapshotsBatch(codes) {
   const dataByCode = new Map();
   const bookByCode = new Map();
 
-  for (const group of chunkArray(codes, BATCH_SIZE)) {
+  await runPool(chunkArray(codes, BATCH_SIZE), BATCH_FETCH_CONCURRENCY, async (group) => {
     try {
       const results = await invezgoGet(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
       if (Array.isArray(results)) for (const r of results) dataByCode.set(r.code, r);
     } catch (e) {
       // skip chunk ini, lanjut chunk berikutnya
     }
-  }
-  for (const group of chunkArray(codes, BATCH_SIZE)) {
+  });
+  await runPool(chunkArray(codes, BATCH_SIZE), BATCH_FETCH_CONCURRENCY, async (group) => {
     try {
       const results = await invezgoGet(`/batch/order-book/${group.join("|")}`, { market: "RG" });
       if (Array.isArray(results)) for (const r of results) bookByCode.set(r.code, r);
     } catch (e) {
       // skip chunk ini, lanjut chunk berikutnya
     }
-  }
+  });
 
   return codes.map((code) => {
     const d = dataByCode.get(code);
@@ -384,27 +392,27 @@ function average(nums) {
 // penuh itu 2x lebih mahal dari yang dibutuhkan ARA Hunter di Stage 1.
 async function getIntradayPriceSnapshotsBatch(codes) {
   const map = new Map();
-  for (const group of chunkArray(codes, BATCH_SIZE)) {
+  await runPool(chunkArray(codes, BATCH_SIZE), BATCH_FETCH_CONCURRENCY, async (group) => {
     try {
       const results = await invezgoGet(`/batch/intraday-data/${group.join("|")}`, { market: "RG" });
       if (Array.isArray(results)) for (const r of results) map.set(r.code, r);
     } catch (e) {
       // skip chunk ini, lanjut chunk berikutnya
     }
-  }
+  });
   return map;
 }
 
 async function getOrderBookBatch(codes) {
   const map = new Map();
-  for (const group of chunkArray(codes, BATCH_SIZE)) {
+  await runPool(chunkArray(codes, BATCH_SIZE), BATCH_FETCH_CONCURRENCY, async (group) => {
     try {
       const results = await invezgoGet(`/batch/order-book/${group.join("|")}`, { market: "RG" });
       if (Array.isArray(results)) for (const r of results) map.set(r.code, r);
     } catch (e) {
       // skip chunk ini, lanjut chunk berikutnya
     }
-  }
+  });
   return map;
 }
 
