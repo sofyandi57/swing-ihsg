@@ -1138,10 +1138,37 @@ export default async function handler(req, res) {
         // cuma tampilan kosong tanpa penjelasan.
         let debugStats = null;
         if (cached.rows.length === 0 && (mode === "global" || mode === "sektor" || mode === "value")) {
-          const { data: allRows } = await supabaseForCache
+          const { data: allRows, error: debugError } = await supabaseForCache
             .from("scan_results")
             .select("code, value, freq, price")
             .eq("run_id", cached.scanRun.id);
+          // JANGAN diam-diam anggap 0 baris kalau query-nya sendiri ERROR
+          // (misal kolom "freq" belum ada di skema live — migrasi
+          // supabase/schema.sql belum dijalankan ulang) — itu beda kasus
+          // total dari "memang tidak ada saham yang lolos", dan sebelumnya
+          // dua kasus ini kelihatan SAMA PERSIS di UI (diagnostik jadi
+          // menyesatkan, seperti yang User temukan).
+          if (debugError) {
+            debugStats = {
+              queryFailed: true,
+              queryError: debugError.message,
+              hint: "Query diagnostik gagal — kemungkinan besar skema Supabase belum sinkron (kolom baru dari migrasi terakhir belum ada). Jalankan ulang supabase/schema.sql.",
+            };
+            res.setHeader("Cache-Control", "no-store");
+            res.status(200).json({
+              mode,
+              criteria,
+              data: cached.rows.map(rowFromDb),
+              totalScanned: cached.scanRun.total_scanned,
+              scannedAt: new Date(cached.scanRun.scanned_at).getTime(),
+              durationMs: cached.scanRun.duration_ms,
+              saved: true,
+              cached: true,
+              cacheAgeSec: Math.round((Date.now() - new Date(cached.scanRun.scanned_at).getTime()) / 1000),
+              debug: debugStats,
+            });
+            return;
+          }
           const rows = allRows || [];
           const top5ByValue = [...rows]
             .sort((a, b) => (b.value || 0) - (a.value || 0))

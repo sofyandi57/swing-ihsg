@@ -885,7 +885,14 @@ export default function ScanTab() {
       {status === "done" && results.length === 0 && (
         <div className="state-box">
           Tidak ada saham yang cocok dengan kriteria ini.
-          {meta?.debug && (
+          {meta?.debug?.queryFailed && (
+            <div className="error-box" style={{ marginTop: 10, textAlign: "left" }}>
+              ⚠ Diagnostik gagal dibaca: {meta.debug.queryError}
+              <br />
+              {meta.debug.hint}
+            </div>
+          )}
+          {meta?.debug && !meta.debug.queryFailed && (
             <div className="sub" style={{ marginTop: 10, textAlign: "left" }}>
               <b>Diagnostik ({meta.debug.totalRowsWithData} saham dicek):</b>
               <br />
