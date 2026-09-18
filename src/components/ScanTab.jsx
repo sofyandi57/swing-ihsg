@@ -608,38 +608,6 @@ export default function ScanTab() {
 
   return (
     <>
-      {isAdmin && schedulerSettings && (
-        <div className="card">
-          <h2>⏰ Jadwal Otomatis</h2>
-          <p className="sub">
-            Cron Vercel tetap terjadwal jalan (ARA Hunter 09:01 WIB, Momentum Sniper 15:00 WIB) — toggle ini
-            cuma mengaktifkan/nonaktifkan APAKAH cron itu benar-benar scan saat jadwalnya tiba. Nonaktif = 0
-            request ke Invezgo sama sekali, bukan cuma disembunyikan.
-          </p>
-          {[
-            { key: "ara_hunter_cron_enabled", label: "🚀 ARA Hunter (09:01 WIB)" },
-            { key: "momentum_sniper_cron_enabled", label: "🎯 Momentum Sniper (15:00 WIB)" },
-          ].map(({ key, label }) => {
-            const enabled = schedulerSettings[key] !== false;
-            return (
-              <div
-                key={key}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}
-              >
-                <span>{label}</span>
-                <button
-                  className={`btn ${enabled ? "btn-primary" : "btn-ghost"}`}
-                  style={{ minHeight: 36, padding: "6px 14px", fontSize: 12.5 }}
-                  onClick={() => toggleScheduler(key, enabled)}
-                  disabled={schedulerBusy === key}
-                >
-                  {schedulerBusy === key ? "⏳" : enabled ? "✅ Aktif" : "⛔ Nonaktif"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       <div className="card" style={{ padding: 8 }}>
         <div style={{ display: "flex", gap: 8 }}>
