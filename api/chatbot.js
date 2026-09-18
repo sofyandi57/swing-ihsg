@@ -13,6 +13,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { requireUser } from "./_lib/auth.js";
+import { isInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -156,6 +157,9 @@ async function gatherContext(supabase, mentionedCodes) {
 function buildSystemPrompt(context) {
   let ctx = "=== DATA APLIKASI (dari database & Invezgo, per saat ini) ===\n\n";
 
+  if (context.invezgoPausedNote) {
+    ctx += `CATATAN: ${context.invezgoPausedNote}\n\n`;
+  }
   if (context.liveSnapshots?.length > 0) {
     ctx += "Harga terkini (live snapshot):\n" + JSON.stringify(context.liveSnapshots) + "\n\n";
   }
@@ -220,8 +224,17 @@ export default async function handler(req, res) {
   try {
     const mentionedCodes = await extractMentionedCodes(lastUserMessage);
 
+    // Kill-switch global — chatbot TETAP bisa dipakai untuk obrolan biasa
+    // saat Invezgo di-pause (beda dari endpoint scan/chart yang seluruh
+    // fungsinya bergantung Invezgo), cuma konteks data saham live-nya
+    // dilewati (degradasi graceful, bukan tolak total).
+    const invezgoPaused = await isInvezgoPaused();
     const supabase = getSupabaseClient();
-    const context = supabase ? await gatherContext(supabase, mentionedCodes) : {};
+    const context = supabase && !invezgoPaused ? await gatherContext(supabase, mentionedCodes) : {};
+    if (invezgoPaused && mentionedCodes.length > 0) {
+      context.invezgoPausedNote =
+        "Invezgo API sedang di-pause dari Admin panel — data saham live tidak tersedia sampai diaktifkan lagi.";
+    }
     const systemPrompt = buildSystemPrompt(context);
 
     const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {

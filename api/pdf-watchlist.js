@@ -17,6 +17,7 @@
 import { createClient } from "@supabase/supabase-js";
 import pdfParse from "pdf-parse";
 import { requireUser } from "./_lib/auth.js";
+import { rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -414,11 +415,15 @@ export default async function handler(req, res) {
       await handleGetHistory(req, res, supabase);
       return;
     }
+    // handleGetWatchlist fetch harga terkini per kode ke Invezgo — history di
+    // atas TIDAK (murni baca Supabase), jadi gate hanya di sini.
+    if (await rejectIfInvezgoPaused(req, res)) return;
     await handleGetWatchlist(req, res, supabase);
     return;
   }
 
   if (req.method === "POST") {
+    if (await rejectIfInvezgoPaused(req, res)) return;
     await handleUpload(req, res, supabase);
     return;
   }

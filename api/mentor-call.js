@@ -25,6 +25,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { requireUser } from "./_lib/auth.js";
+import { rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -453,6 +454,7 @@ export default async function handler(req, res) {
   if (!user) return;
 
   if (req.method === "GET" && req.query && req.query.action === "check-stock") {
+    if (await rejectIfInvezgoPaused(req, res)) return;
     await handleCheckStock(req, res);
     return;
   }
@@ -463,6 +465,8 @@ export default async function handler(req, res) {
     return;
   }
 
+  // GET tanpa action=check-stock cuma baca histori mentor_calls dari Supabase
+  // — tidak menyentuh Invezgo sama sekali, TIDAK perlu kena gate.
   if (req.method === "GET") {
     const { data, error } = await supabase
       .from("mentor_calls")
@@ -482,6 +486,11 @@ export default async function handler(req, res) {
     res.status(405).json({ error: "Method tidak didukung. Gunakan GET atau POST." });
     return;
   }
+
+  // Sisa path di bawah ini (add-watchlist via fetchLatestPrice, cross-check
+  // pesan via getValidStockCodes/crossCheckWithScanHistory) SEMUA memanggil
+  // Invezgo — gate satu titik di sini.
+  if (await rejectIfInvezgoPaused(req, res)) return;
 
   // Tambah SATU kode ke watchlist atas pilihan eksplisit user (tombol "+ Tambah
   // ke Watchlist" di hasil cross-check) — menggantikan upsert otomatis semua

@@ -17,6 +17,7 @@
 // mode: scalping | intraday | swing | dividen
 
 import { requireUser } from "./_lib/auth.js";
+import { rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const INVEZGO_BASE_URL = "https://api.invezgo.com";
 const API_KEY = process.env.INVEZGO_API_KEY;
@@ -554,6 +555,8 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
     return;
   }
+
+  if (await rejectIfInvezgoPaused(req, res)) return;
 
   const code = (req.query?.code || "").toUpperCase().trim();
   const mode = req.query?.mode || "swing";

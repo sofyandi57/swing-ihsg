@@ -10,6 +10,7 @@
 // POST body: { codes: ["BBCA", "ANTM", ...] }
 
 import { requireUser } from "./_lib/auth.js";
+import { rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const INVEZGO_BASE_URL = "https://api.invezgo.com";
 const API_KEY = process.env.INVEZGO_API_KEY;
@@ -64,6 +65,7 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
     return;
   }
+  if (await rejectIfInvezgoPaused(req, res)) return;
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method tidak didukung. Gunakan POST." });
     return;
