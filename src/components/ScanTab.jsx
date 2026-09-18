@@ -379,6 +379,14 @@ export default function ScanTab() {
   const [schedulerSettings, setSchedulerSettings] = useState(null);
   const [schedulerBusy, setSchedulerBusy] = useState(null); // key yang sedang di-toggle, atau null
 
+  // Manual Scan (kriteria bebas, semua mode) vs Automated Scan (khusus
+  // BPJS/BSJP dari Momentum Sniper, sudah difilter+dibersihkan, maks 5
+  // rekomendasi terbaik) — dua alur terpisah, bukan cuma tampilan beda.
+  const [viewMode, setViewMode] = useState("manual"); // manual | automated
+  const [automatedStatus, setAutomatedStatus] = useState("idle"); // idle | loading | done | error
+  const [automatedResults, setAutomatedResults] = useState([]);
+  const [automatedError, setAutomatedError] = useState("");
+
   // Toggle jadwal cron (ARA Hunter/Momentum Sniper) SENGAJA hanya untuk admin
   // — bukan pengaturan per-user, ini mematikan/menyalakan cron GLOBAL untuk
   // semua orang. Fetch whoami dulu untuk tahu status admin (ScanTab tidak
@@ -550,6 +558,35 @@ export default function ScanTab() {
     }
   }
 
+  // Automated Scan — HANYA strategi BPJS/BSJP (BPJP sengaja dikecualikan
+  // sesuai spek User), dibersihkan (dedup per kode, ambil skor tertinggi
+  // kalau kode sama lolos >1 strategi), maks 5 rekomendasi terbaik.
+  async function runAutomatedScan() {
+    setAutomatedStatus("loading");
+    setAutomatedError("");
+    try {
+      const resp = await authFetch("/api/screener?mode=momentum_sniper");
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+      const bpjsBsjp = (json.data || []).filter(
+        (r) => Array.isArray(r.strategies) && r.strategies.some((s) => s === "BPJS" || s === "BSJP")
+      );
+      const byCode = new Map();
+      for (const r of bpjsBsjp) {
+        const existing = byCode.get(r.code);
+        if (!existing || r.humanSpeedScore > existing.humanSpeedScore) byCode.set(r.code, r);
+      }
+      const cleaned = [...byCode.values()].sort((a, b) => b.humanSpeedScore - a.humanSpeedScore).slice(0, 5);
+
+      setAutomatedResults(cleaned);
+      setAutomatedStatus("done");
+    } catch (e) {
+      setAutomatedError(e.message);
+      setAutomatedStatus("error");
+    }
+  }
+
   const sortedResults = useMemo(() => {
     const sorted = [...results].sort((a, b) => {
       const av = a[sortField];
@@ -604,6 +641,72 @@ export default function ScanTab() {
         </div>
       )}
 
+      <div className="card" style={{ padding: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className={`btn ${viewMode === "manual" ? "btn-primary" : "btn-ghost"}`}
+            style={{ flex: 1 }}
+            onClick={() => setViewMode("manual")}
+          >
+            🔧 Manual Scan
+          </button>
+          <button
+            className={`btn ${viewMode === "automated" ? "btn-primary" : "btn-ghost"}`}
+            style={{ flex: 1 }}
+            onClick={() => setViewMode("automated")}
+          >
+            🤖 Automated Scan
+          </button>
+        </div>
+      </div>
+
+      {viewMode === "automated" && (
+        <div className="card">
+          <h2>🤖 Automated Scan — BPJS &amp; BSJP</h2>
+          <p className="sub">
+            Rekomendasi otomatis dari Momentum Sniper, KHUSUS strategi BPJS (Buy Pagi Jual Sore) dan BSJP (Buy
+            Sore Jual Pagi) — BPJP sengaja tidak disertakan di sini. Sudah dibersihkan (dedup per kode, ambil
+            skor tertinggi) dan dibatasi maksimal 5 rekomendasi terbaik.
+          </p>
+          {isAdmin && schedulerSettings && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)", marginBottom: 10 }}>
+              <span>Auto-Scan Terjadwal (15:00 WIB)</span>
+              <button
+                className={`btn ${schedulerSettings.momentum_sniper_cron_enabled !== false ? "btn-primary" : "btn-ghost"}`}
+                style={{ minHeight: 36, padding: "6px 14px", fontSize: 12.5 }}
+                onClick={() => toggleScheduler("momentum_sniper_cron_enabled", schedulerSettings.momentum_sniper_cron_enabled !== false)}
+                disabled={schedulerBusy === "momentum_sniper_cron_enabled"}
+              >
+                {schedulerBusy === "momentum_sniper_cron_enabled"
+                  ? "⏳"
+                  : schedulerSettings.momentum_sniper_cron_enabled !== false
+                  ? "✅ Aktif"
+                  : "⛔ Nonaktif"}
+              </button>
+            </div>
+          )}
+          <button className="btn btn-primary btn-block" onClick={runAutomatedScan} disabled={automatedStatus === "loading"}>
+            {automatedStatus === "loading" ? "⏳ Memindai..." : "🔄 Scan Sekarang"}
+          </button>
+          {automatedError && <div className="error-box" style={{ marginTop: 10 }}>{automatedError}</div>}
+          {automatedStatus === "done" && automatedResults.length === 0 && (
+            <div className="cross-miss" style={{ marginTop: 10 }}>
+              Tidak ada kandidat BPJS/BSJP saat ini — window strategi ini aktif 08:00-10:00 WIB (BPJS) dan
+              15:00-16:00 WIB (BSJP), di luar jam itu wajar hasilnya kosong.
+            </div>
+          )}
+          {automatedResults.length > 0 && (
+            <div className="result-list" style={{ marginTop: 10 }}>
+              {automatedResults.map((row) => (
+                <MomentumSniperCard key={row.code} row={row} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewMode === "manual" && (
+        <>
       {criteriaMode === null && (
         <div className="card">
           <h2>⚡ Pilih Kriteria Scan</h2>
@@ -881,6 +984,8 @@ export default function ScanTab() {
               ))
             )}
           </div>
+        </>
+      )}
         </>
       )}
     </>
