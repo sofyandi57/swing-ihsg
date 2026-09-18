@@ -254,6 +254,130 @@ function SettingsSection() {
   );
 }
 
+const MODE_LABELS = {
+  global: "Global",
+  sektor: "Sektor",
+  value: "Value",
+  volume_spike: "Volume Spike",
+  special_if2x: "IF2X",
+  momentum_sniper: "Momentum Sniper",
+  ara_hunter: "ARA Hunter",
+};
+
+function formatCompactAdmin(n) {
+  if (n === null || n === undefined) return "-";
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "-";
+  if (Math.abs(num) >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(1)}M`;
+  if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(0)}Jt`;
+  return num.toLocaleString("id-ID");
+}
+
+// Tab "Screener Admin" — daftar SEMUA saham yang pernah lolos filter di
+// histori scan (manual maupun cron), lengkap kode/harga/metode/waktu. Beda
+// dari HistorySection di bawah (yang cuma ringkasan jumlah per run, bukan
+// daftar sahamnya).
+function ScreenerResultsSection() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [modeFilter, setModeFilter] = useState("all");
+
+  async function load() {
+    setError("");
+    try {
+      const resp = await authFetch("/api/admin?resource=screener-results&limit=300");
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setRows(json.rows || []);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const modes = rows ? [...new Set(rows.map((r) => r.mode).filter(Boolean))] : [];
+  const filteredRows = rows ? (modeFilter === "all" ? rows : rows.filter((r) => r.mode === modeFilter)) : [];
+
+  return (
+    <div className="card">
+      <h2>🎯 Screener Admin</h2>
+      <p className="sub">
+        Semua saham yang lolos filter dari histori scan (manual maupun otomatis/cron) — kode, harga, metode
+        screener yang dipakai, dan waktu scan-nya.
+      </p>
+      {error && <div className="error-box">{error}</div>}
+      {rows === null && !error && <div className="state-box">Memuat...</div>}
+
+      {rows && (
+        <>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            <button
+              className={`btn ${modeFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+              style={{ minHeight: 32, padding: "4px 10px", fontSize: 12 }}
+              onClick={() => setModeFilter("all")}
+            >
+              Semua ({rows.length})
+            </button>
+            {modes.map((m) => (
+              <button
+                key={m}
+                className={`btn ${modeFilter === m ? "btn-primary" : "btn-ghost"}`}
+                style={{ minHeight: 32, padding: "4px 10px", fontSize: 12 }}
+                onClick={() => setModeFilter(m)}
+              >
+                {MODE_LABELS[m] || m} ({rows.filter((r) => r.mode === m).length})
+              </button>
+            ))}
+            <button className="btn btn-ghost" style={{ minHeight: 32, padding: "4px 10px", fontSize: 12 }} onClick={load}>
+              🔄
+            </button>
+          </div>
+
+          {filteredRows.length === 0 ? (
+            <div className="state-box">Belum ada saham yang lolos filter untuk kriteria ini.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="bdm-table">
+                <thead>
+                  <tr>
+                    <th>Kode</th>
+                    <th>Harga</th>
+                    <th>Change %</th>
+                    <th>Value</th>
+                    <th>Freq</th>
+                    <th>Sektor</th>
+                    <th>Metode</th>
+                    <th>Waktu Scan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.map((r, i) => (
+                    <tr key={`${r.code}-${r.scannedAt}-${i}`}>
+                      <td><b>{r.code}</b></td>
+                      <td>{r.price != null ? r.price.toLocaleString("id-ID") : "-"}</td>
+                      <td style={{ color: r.priceChangePct >= 0 ? "var(--green)" : "var(--red)" }}>
+                        {r.priceChangePct != null ? `${r.priceChangePct >= 0 ? "+" : ""}${r.priceChangePct.toFixed(2)}%` : "-"}
+                      </td>
+                      <td>{formatCompactAdmin(r.value)}</td>
+                      <td>{r.freq != null ? r.freq.toLocaleString("id-ID") : "-"}</td>
+                      <td>{r.sector || "-"}</td>
+                      <td>{MODE_LABELS[r.mode] || r.mode || "-"}</td>
+                      <td>{r.scannedAt ? new Date(r.scannedAt).toLocaleString("id-ID") : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function HistorySection() {
   const [history, setHistory] = useState(null);
   const [error, setError] = useState("");
@@ -643,6 +767,7 @@ export default function AdminTab() {
       <QuotaFlushSection />
       <SettingsSection />
       <SecretsSection />
+      <ScreenerResultsSection />
       <HistorySection />
     </>
   );

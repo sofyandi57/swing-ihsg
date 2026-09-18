@@ -15,6 +15,11 @@
 // GET  ?resource=settings          — parameter screener saat ini (admin only)
 // POST ?resource=settings          — update satu parameter { key, value } (admin only)
 // GET  ?resource=history           — ringkasan scan_runs/mentor_calls/pdf_extracts terakhir (admin only)
+// GET  ?resource=screener-results[&limit=N] — daftar SEMUA saham yang lolos filter
+//                                    (passed_filter=true) dari histori scan_results,
+//                                    lengkap kode/harga/value/freq/sektor + mode &
+//                                    waktu scan-nya (join scan_runs). Default limit 200,
+//                                    maks 1000. (admin only)
 // GET  ?resource=secrets           — status ADA/TIDAK env var penting, BUKAN nilainya (admin only)
 // GET  ?resource=activity          — log login/logout semua user, terbaru dulu (admin only)
 // POST ?resource=activity          — catat SATU event { event: "login"|"logout" } milik diri
@@ -255,6 +260,44 @@ async function handleHistory(req, res, supabase) {
     totalPdfExtracts: pdfCount || 0,
     totalWatchlistItems: watchlistCount || 0,
   });
+}
+
+// GET ?resource=screener-results[&limit=N] — admin only. Daftar SEMUA saham
+// yang LOLOS FILTER (passed_filter=true) dari histori scan_results, join ke
+// scan_runs untuk dapat mode/metode + waktu scan-nya. Beda dari
+// resource=history (yang cuma ringkasan run, bukan daftar sahamnya).
+async function handleScreenerResults(req, res, supabase) {
+  const admin = await requireAdmin(req, res, supabase);
+  if (!admin) return;
+
+  const limit = Math.min(Number(req.query?.limit) || 200, 1000);
+
+  const { data, error } = await supabase
+    .from("scan_results")
+    .select("code, price, price_change_pct, value, freq, volume, sector, subsector, run_id, scan_runs!inner(mode, scanned_at)")
+    .eq("passed_filter", true)
+    .order("scanned_at", { foreignTable: "scan_runs", ascending: false })
+    .limit(limit);
+
+  if (error) {
+    res.status(502).json({ error: error.message });
+    return;
+  }
+
+  const rows = (data || []).map((r) => ({
+    code: r.code,
+    price: r.price,
+    priceChangePct: r.price_change_pct,
+    value: r.value,
+    freq: r.freq,
+    volume: r.volume,
+    sector: r.sector,
+    subsector: r.subsector,
+    mode: r.scan_runs?.mode || null,
+    scannedAt: r.scan_runs?.scanned_at || null,
+  }));
+
+  res.status(200).json({ rows });
 }
 
 async function handleActivity(req, res, supabase) {
@@ -825,6 +868,9 @@ export default async function handler(req, res) {
     case "history":
       await handleHistory(req, res, supabase);
       return;
+    case "screener-results":
+      await handleScreenerResults(req, res, supabase);
+      return;
     case "secrets":
       await handleSecrets(req, res, supabase);
       return;
@@ -843,7 +889,7 @@ export default async function handler(req, res) {
     default:
       res.status(400).json({
         error:
-          "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, secrets, activity, quota-flush, quota-usage, broker-tier-check.",
+          "Parameter 'resource' tidak valid. Pilihan: whoami, users, settings, history, screener-results, secrets, activity, quota-flush, quota-usage, broker-tier-check.",
       });
   }
 }
