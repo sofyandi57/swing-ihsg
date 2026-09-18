@@ -636,23 +636,33 @@ export default function ScanTab() {
             Sore Jual Pagi) — BPJP sengaja tidak disertakan di sini. Sudah dibersihkan (dedup per kode, ambil
             skor tertinggi) dan dibatasi maksimal 5 rekomendasi terbaik.
           </p>
-          {isAdmin && schedulerSettings && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)", marginBottom: 10 }}>
-              <span>Auto-Scan Terjadwal (15:00 WIB)</span>
-              <button
-                className={`btn ${schedulerSettings.momentum_sniper_cron_enabled !== false ? "btn-primary" : "btn-ghost"}`}
-                style={{ minHeight: 36, padding: "6px 14px", fontSize: 12.5 }}
-                onClick={() => toggleScheduler("momentum_sniper_cron_enabled", schedulerSettings.momentum_sniper_cron_enabled !== false)}
-                disabled={schedulerBusy === "momentum_sniper_cron_enabled"}
-              >
-                {schedulerBusy === "momentum_sniper_cron_enabled"
-                  ? "⏳"
-                  : schedulerSettings.momentum_sniper_cron_enabled !== false
-                  ? "✅ Aktif"
-                  : "⛔ Nonaktif"}
-              </button>
-            </div>
-          )}
+          {isAdmin && schedulerSettings && (() => {
+            // Satu slot toggle, dua cron — konten berganti sesuai jam WIB
+            // sekarang: pagi (sebelum 12:00) kontrol ARA Hunter (09:01 WIB,
+            // penyuplai kandidat pagi), siang/sore kontrol Momentum Sniper
+            // (15:00 WIB, penyuplai BSJP). Tidak perlu dua tombol terpisah —
+            // yang relevan buat User cuma yang jadwalnya belum lewat hari itu.
+            const wibHour = Number(
+              new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jakarta", hour: "2-digit", hour12: false }).format(new Date())
+            );
+            const isMorning = wibHour < 12;
+            const key = isMorning ? "ara_hunter_cron_enabled" : "momentum_sniper_cron_enabled";
+            const label = isMorning ? "Auto-Scan Pagi — ARA Hunter (09:01 WIB)" : "Auto-Scan Sore — Momentum Sniper (15:00 WIB)";
+            const enabled = schedulerSettings[key] !== false;
+            return (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)", marginBottom: 10 }}>
+                <span>{label}</span>
+                <button
+                  className={`btn ${enabled ? "btn-primary" : "btn-ghost"}`}
+                  style={{ minHeight: 36, padding: "6px 14px", fontSize: 12.5 }}
+                  onClick={() => toggleScheduler(key, enabled)}
+                  disabled={schedulerBusy === key}
+                >
+                  {schedulerBusy === key ? "⏳" : enabled ? "✅ Aktif" : "⛔ Nonaktif"}
+                </button>
+              </div>
+            );
+          })()}
           <button className="btn btn-primary btn-block" onClick={runAutomatedScan} disabled={automatedStatus === "loading"}>
             {automatedStatus === "loading" ? "⏳ Memindai..." : "🔄 Scan Sekarang"}
           </button>
