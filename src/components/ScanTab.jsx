@@ -883,7 +883,28 @@ export default function ScanTab() {
       )}
 
       {status === "done" && results.length === 0 && (
-        <div className="state-box">Tidak ada saham yang cocok dengan kriteria ini.</div>
+        <div className="state-box">
+          Tidak ada saham yang cocok dengan kriteria ini.
+          {meta?.debug && (
+            <div className="sub" style={{ marginTop: 10, textAlign: "left" }}>
+              <b>Diagnostik ({meta.debug.totalRowsWithData} saham dicek):</b>
+              <br />
+              Lolos batas harga (≥{meta.debug.currentThresholds.minPrice}): {meta.debug.passedPriceFloor}
+              <br />
+              Lolos batas value (≥{formatCompact(meta.debug.currentThresholds.minValueActivity)}): {meta.debug.passedValueFloor}
+              <br />
+              Lolos batas frekuensi (≥{meta.debug.currentThresholds.minFreq}): {meta.debug.passedFreqFloor}
+              <br />
+              <br />
+              Top 5 value tertinggi hari ini:
+              {meta.debug.top5ByValue.map((r) => (
+                <div key={r.code}>
+                  {r.code}: value {formatCompact(r.value)}, freq {r.freq}, harga {r.price}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {status === "done" && results.length > 0 && (

@@ -1132,6 +1132,30 @@ export default async function handler(req, res) {
     if (supabaseForCache) {
       const cached = await findCachedRun(supabaseForCache, criteria);
       if (cached) {
+        // Sama seperti scan fresh — kalau cache-hit ternyata 0 hasil, tarik
+        // SEMUA baris run itu (bukan cuma yang lolos) untuk diagnostik,
+        // supaya "0 cocok kriteria dari cache" juga bisa diverifikasi, bukan
+        // cuma tampilan kosong tanpa penjelasan.
+        let debugStats = null;
+        if (cached.rows.length === 0 && (mode === "global" || mode === "sektor" || mode === "value")) {
+          const { data: allRows } = await supabaseForCache
+            .from("scan_results")
+            .select("code, value, freq, price")
+            .eq("run_id", cached.scanRun.id);
+          const rows = allRows || [];
+          const top5ByValue = [...rows]
+            .sort((a, b) => (b.value || 0) - (a.value || 0))
+            .slice(0, 5)
+            .map((r) => ({ code: r.code, value: r.value, freq: r.freq, price: r.price }));
+          debugStats = {
+            totalRowsWithData: rows.length,
+            passedPriceFloor: rows.filter((r) => r.price >= MIN_PRICE).length,
+            passedValueFloor: rows.filter((r) => r.value >= MIN_VALUE_ACTIVITY).length,
+            passedFreqFloor: rows.filter((r) => r.freq >= MIN_FREQ).length,
+            currentThresholds: { minValueActivity: MIN_VALUE_ACTIVITY, minFreq: MIN_FREQ, minPrice: MIN_PRICE },
+            top5ByValue,
+          };
+        }
         res.setHeader("Cache-Control", "no-store");
         res.status(200).json({
           mode,
@@ -1143,6 +1167,7 @@ export default async function handler(req, res) {
           saved: true,
           cached: true,
           cacheAgeSec: Math.round((Date.now() - new Date(cached.scanRun.scanned_at).getTime()) / 1000),
+          debug: debugStats,
         });
         return;
       }
@@ -1172,6 +1197,27 @@ export default async function handler(req, res) {
 
     const durationMs = Date.now() - startedAt;
 
+    // Diagnostik — HANYA dibangun kalau 0 saham lolos filter di mode yang
+    // pakai MIN_VALUE_ACTIVITY/MIN_FREQ/MIN_PRICE (global/sektor/value).
+    // Tanpa ini, "0 cocok kriteria" tidak bisa dibedakan dari "data batch
+    // gagal total" vs "threshold memang ketat" — User sempat laporkan hasil
+    // 0 yang mencurigakan tanpa cara memverifikasi dari UI sama sekali.
+    let debugStats = null;
+    if (matched.length === 0 && (mode === "global" || mode === "sektor" || mode === "value")) {
+      const top5ByValue = [...all]
+        .sort((a, b) => (b.value || 0) - (a.value || 0))
+        .slice(0, 5)
+        .map((r) => ({ code: r.code, value: r.value, freq: r.freq, price: r.price }));
+      debugStats = {
+        totalRowsWithData: all.length,
+        passedPriceFloor: all.filter((r) => r.price >= MIN_PRICE).length,
+        passedValueFloor: all.filter((r) => r.value >= MIN_VALUE_ACTIVITY).length,
+        passedFreqFloor: all.filter((r) => r.freq >= MIN_FREQ).length,
+        currentThresholds: { minValueActivity: MIN_VALUE_ACTIVITY, minFreq: MIN_FREQ, minPrice: MIN_PRICE },
+        top5ByValue,
+      };
+    }
+
     // Simpan ke Supabase — kalau gagal, tetap kembalikan hasil scan ke browser
     // (jangan gagalkan scan yang sudah berhasil hanya karena penyimpanan histori gagal)
     const saveResult = await saveToSupabase({
@@ -1198,6 +1244,7 @@ export default async function handler(req, res) {
       saved: saveResult.saved,
       cached: false,
       saveError: saveResult.saved ? undefined : saveResult.reason,
+      debug: debugStats,
     });
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });
