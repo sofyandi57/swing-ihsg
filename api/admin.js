@@ -187,6 +187,13 @@ const SETTINGS_DEFAULTS = {
   min_price: 50,
   top_n: 25,
   concurrency: 20,
+  // On/off toggle untuk cron terjadwal (dibaca api/screener.js saat dipicu
+  // CRON_SECRET — lihat blok isCronAraHunter/isCronBsjp di handler). Cron
+  // Vercel sendiri TETAP terjadwal jalan (vercel.json tidak bisa diubah saat
+  // runtime), tapi begitu jalan langsung cek flag ini dan skip total (0
+  // request ke Invezgo) kalau di-nonaktifkan lewat toggle di tab Run Scan.
+  ara_hunter_cron_enabled: true,
+  momentum_sniper_cron_enabled: true,
 };
 
 async function handleSettings(req, res, supabase) {

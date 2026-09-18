@@ -375,6 +375,49 @@ export default function ScanTab() {
   const [aiGroqUsed, setAiGroqUsed] = useState(true);
   const [aiGroqSkipReason, setAiGroqSkipReason] = useState("");
 
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [schedulerSettings, setSchedulerSettings] = useState(null);
+  const [schedulerBusy, setSchedulerBusy] = useState(null); // key yang sedang di-toggle, atau null
+
+  // Toggle jadwal cron (ARA Hunter/Momentum Sniper) SENGAJA hanya untuk admin
+  // — bukan pengaturan per-user, ini mematikan/menyalakan cron GLOBAL untuk
+  // semua orang. Fetch whoami dulu untuk tahu status admin (ScanTab tidak
+  // menerima prop isAdmin dari App.jsx).
+  useEffect(() => {
+    (async () => {
+      try {
+        const whoamiResp = await authFetch("/api/admin?resource=whoami");
+        const whoamiJson = await whoamiResp.json();
+        if (!whoamiResp.ok || !whoamiJson.isAdmin) return;
+        setIsAdmin(true);
+
+        const settingsResp = await authFetch("/api/admin?resource=settings");
+        const settingsJson = await settingsResp.json();
+        if (settingsResp.ok) setSchedulerSettings(settingsJson.settings);
+      } catch (e) {
+        // Diamkan — toggle scheduler cuma kemudahan admin, bukan fitur inti scan
+      }
+    })();
+  }, []);
+
+  async function toggleScheduler(key, currentValue) {
+    setSchedulerBusy(key);
+    try {
+      const resp = await authFetch("/api/admin?resource=settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value: !currentValue }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setSchedulerSettings((prev) => ({ ...prev, [key]: !currentValue }));
+    } catch (e) {
+      // Diamkan — kalau gagal, toggle di UI tidak berubah, user bisa coba lagi
+    } finally {
+      setSchedulerBusy(null);
+    }
+  }
+
   useEffect(() => {
     if (criteriaMode !== "sektor" || sectorsList !== null) return;
     (async () => {
@@ -528,6 +571,39 @@ export default function ScanTab() {
 
   return (
     <>
+      {isAdmin && schedulerSettings && (
+        <div className="card">
+          <h2>⏰ Jadwal Otomatis</h2>
+          <p className="sub">
+            Cron Vercel tetap terjadwal jalan (ARA Hunter 09:01 WIB, Momentum Sniper 15:00 WIB) — toggle ini
+            cuma mengaktifkan/nonaktifkan APAKAH cron itu benar-benar scan saat jadwalnya tiba. Nonaktif = 0
+            request ke Invezgo sama sekali, bukan cuma disembunyikan.
+          </p>
+          {[
+            { key: "ara_hunter_cron_enabled", label: "🚀 ARA Hunter (09:01 WIB)" },
+            { key: "momentum_sniper_cron_enabled", label: "🎯 Momentum Sniper (15:00 WIB)" },
+          ].map(({ key, label }) => {
+            const enabled = schedulerSettings[key] !== false;
+            return (
+              <div
+                key={key}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}
+              >
+                <span>{label}</span>
+                <button
+                  className={`btn ${enabled ? "btn-primary" : "btn-ghost"}`}
+                  style={{ minHeight: 36, padding: "6px 14px", fontSize: 12.5 }}
+                  onClick={() => toggleScheduler(key, enabled)}
+                  disabled={schedulerBusy === key}
+                >
+                  {schedulerBusy === key ? "⏳" : enabled ? "✅ Aktif" : "⛔ Nonaktif"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {criteriaMode === null && (
         <div className="card">
           <h2>⚡ Pilih Kriteria Scan</h2>

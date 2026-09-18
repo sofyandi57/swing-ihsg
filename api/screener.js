@@ -57,6 +57,14 @@ let MIN_PRICE = 50;
 let TOP_N = 25;
 let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 
+// On/off toggle scheduler (dikontrol dari tab Run Scan, admin only) — dibaca
+// SETIAP kali endpoint ini dipanggil lewat CRON_SECRET (mode=ara_hunter atau
+// momentum_sniper). Cron Vercel sendiri tetap terjadwal (vercel.json statis,
+// tidak bisa diubah runtime), tapi kalau toggle ini false, handler langsung
+// skip TANPA hit Invezgo sama sekali — bukan cuma disembunyikan di UI.
+let ARA_HUNTER_CRON_ENABLED = true;
+let MOMENTUM_SNIPER_CRON_ENABLED = true;
+
 // Hardcode, BUKAN lewat app_settings — sengaja tidak bisa diubah dari Admin
 // panel supaya konsisten jadi lantai minimum di semua mode. Lihat pemakaian
 // di runScan() untuk alasan lengkapnya.
@@ -197,6 +205,8 @@ async function loadSettingsOverrides() {
       if (row.key === "min_price") MIN_PRICE = Number(row.value);
       if (row.key === "top_n") TOP_N = Number(row.value);
       if (row.key === "concurrency") CONCURRENCY = Number(row.value);
+      if (row.key === "ara_hunter_cron_enabled") ARA_HUNTER_CRON_ENABLED = row.value !== false;
+      if (row.key === "momentum_sniper_cron_enabled") MOMENTUM_SNIPER_CRON_ENABLED = row.value !== false;
     }
   } catch (e) {
     // Gagal baca override bukan alasan gagalkan scan — tetap pakai default di atas
@@ -1048,6 +1058,18 @@ export default async function handler(req, res) {
   }
 
   await loadSettingsOverrides();
+
+  // Toggle scheduler — HANYA berlaku untuk trigger cron (cron secret), bukan
+  // klik manual admin/user biasa lewat tab Run Scan. Skip di sini, SEBELUM
+  // scan sungguhan jalan — 0 request ke Invezgo kalau dinonaktifkan.
+  if (isCronAraHunter && !ARA_HUNTER_CRON_ENABLED) {
+    res.status(200).json({ skipped: true, reason: "Jadwal ARA Hunter sedang dinonaktifkan lewat tab Run Scan." });
+    return;
+  }
+  if (isCronBsjp && !MOMENTUM_SNIPER_CRON_ENABLED) {
+    res.status(200).json({ skipped: true, reason: "Jadwal Momentum Sniper sedang dinonaktifkan lewat tab Run Scan." });
+    return;
+  }
 
   const VALID_MODES = new Set(["global", "sektor", "value", "volume_spike", "special_if2x", "momentum_sniper", "ara_hunter"]);
   if (!VALID_MODES.has(mode)) {
