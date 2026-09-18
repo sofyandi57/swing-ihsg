@@ -229,9 +229,15 @@ async function invezgoGet(path, params = {}) {
     headers: { Authorization: `Bearer ${API_KEY}` },
   });
 
-  if (resp.status === 401) throw new Error("401: API key tidak valid.");
-  if (resp.status === 402) throw new Error("402: Paket subscription tidak cukup / API key expired.");
-  if (resp.status === 429) throw new Error("429: Rate limit tercapai.");
+  // Untuk 401/402/429 tampilkan BODY ASLI dari Invezgo, bukan label generik
+  // tebakan — 402 di endpoint Batch ternyata bisa berarti "fitur ini butuh
+  // add-on paket terpisah" (API key & paket dasar tetap valid, terbukti dari
+  // endpoint lain yang sukses 200), bukan cuma "API key expired" seperti
+  // asumsi awal.
+  if (resp.status === 401 || resp.status === 402 || resp.status === 429) {
+    const bodyText = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status} di ${path}: ${bodyText || "(tanpa detail dari Invezgo)"}`);
+  }
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
 
   return resp.json();
