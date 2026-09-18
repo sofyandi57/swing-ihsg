@@ -194,6 +194,13 @@ const SETTINGS_DEFAULTS = {
   // request ke Invezgo) kalau di-nonaktifkan lewat toggle di tab Run Scan.
   ara_hunter_cron_enabled: true,
   momentum_sniper_cron_enabled: true,
+  // Kill-switch darurat GLOBAL — kalau true, SEMUA endpoint yang memanggil
+  // Invezgo (scan di api/screener.js, flush di api/admin.js) langsung
+  // menolak sebelum sempat kirim satu request pun. Beda dari toggle cron di
+  // atas (yang cuma matikan JADWAL OTOMATIS) — ini juga memblokir klik
+  // manual, dipakai kalau kuota mendadak kritis dan User butuh berhenti
+  // total sementara, dari mana pun sumber requestnya.
+  invezgo_paused: false,
 };
 
 async function handleSettings(req, res, supabase) {
@@ -438,6 +445,16 @@ async function handleQuotaFlush(req, res, supabase) {
 
   if (!INVEZGO_API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
+    return;
+  }
+
+  // Kill-switch global (lihat komentar invezgo_paused di SETTINGS_DEFAULTS)
+  // — dicek TEPAT SEBELUM request Invezgo pertama, jadi klik manual maupun
+  // cron sama-sama dihentikan, tapi action=export (baca database saja, di
+  // atas) TETAP jalan normal saat di-pause.
+  const { data: pauseRow } = await supabase.from("app_settings").select("value").eq("key", "invezgo_paused").maybeSingle();
+  if (pauseRow?.value === true) {
+    res.status(200).json({ skipped: true, reason: "Invezgo API sedang di-pause dari Admin panel." });
     return;
   }
 

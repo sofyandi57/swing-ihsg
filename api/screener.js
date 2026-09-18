@@ -65,6 +65,13 @@ let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
 let ARA_HUNTER_CRON_ENABLED = true;
 let MOMENTUM_SNIPER_CRON_ENABLED = true;
 
+// Kill-switch darurat GLOBAL (toggle di Admin panel, gauge kuota) — kalau
+// true, endpoint ini menolak SEMUA mode (manual klik ATAU cron) sebelum
+// satu pun request ke Invezgo terkirim. Beda dari ARA_HUNTER/MOMENTUM_SNIPER
+// _CRON_ENABLED di atas (yang cuma matikan jadwal otomatis) — ini juga
+// memblokir klik manual dari tab Run Scan.
+let INVEZGO_PAUSED = false;
+
 // Hardcode, BUKAN lewat app_settings — sengaja tidak bisa diubah dari Admin
 // panel supaya konsisten jadi lantai minimum di semua mode. Lihat pemakaian
 // di runScan() untuk alasan lengkapnya.
@@ -207,6 +214,7 @@ async function loadSettingsOverrides() {
       if (row.key === "concurrency") CONCURRENCY = Number(row.value);
       if (row.key === "ara_hunter_cron_enabled") ARA_HUNTER_CRON_ENABLED = row.value !== false;
       if (row.key === "momentum_sniper_cron_enabled") MOMENTUM_SNIPER_CRON_ENABLED = row.value !== false;
+      if (row.key === "invezgo_paused") INVEZGO_PAUSED = row.value === true;
     }
   } catch (e) {
     // Gagal baca override bukan alasan gagalkan scan — tetap pakai default di atas
@@ -1058,6 +1066,13 @@ export default async function handler(req, res) {
   }
 
   await loadSettingsOverrides();
+
+  // Kill-switch global — berlaku untuk SEMUA pemanggil (manual klik ATAU
+  // cron), beda dari toggle scheduler di bawah yang cuma untuk cron.
+  if (INVEZGO_PAUSED) {
+    res.status(503).json({ error: "Invezgo API sedang di-pause dari Admin panel." });
+    return;
+  }
 
   // Toggle scheduler — HANYA berlaku untuk trigger cron (cron secret), bukan
   // klik manual admin/user biasa lewat tab Run Scan. Skip di sini, SEBELUM

@@ -29,11 +29,30 @@
 //   15 → maks 1 tahun terakhir
 //   30, 60, D, W, M → maks 2 tahun terakhir
 
+import { createClient } from "@supabase/supabase-js";
 import { requireUser } from "./_lib/auth.js";
 
 const INVEZGO_BASE_URL = "https://api.invezgo.com";
 const API_KEY = process.env.INVEZGO_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Kill-switch darurat GLOBAL (toggle di Admin panel, gauge kuota) — dicek di
+// awal handler, SEBELUM request Invezgo apa pun (candlestick Chart tab
+// maupun laporan Bandarmologi yang lebih berat, 9 dimensi sekaligus).
+async function isInvezgoPaused() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return false;
+  try {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const { data } = await supabase.from("app_settings").select("value").eq("key", "invezgo_paused").maybeSingle();
+    return data?.value === true;
+  } catch (e) {
+    return false;
+  }
+}
 
 const VALID_TIMEFRAMES = new Set(["1", "5", "15", "30", "60", "D", "W", "M"]);
 
@@ -308,6 +327,11 @@ export default async function handler(req, res) {
 
   if (!API_KEY) {
     res.status(500).json({ error: "INVEZGO_API_KEY belum diset di environment variable Vercel." });
+    return;
+  }
+
+  if (await isInvezgoPaused()) {
+    res.status(503).json({ error: "Invezgo API sedang di-pause dari Admin panel." });
     return;
   }
 

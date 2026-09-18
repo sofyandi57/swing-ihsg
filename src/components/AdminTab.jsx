@@ -363,19 +363,44 @@ function QuotaGaugeSection() {
   const [status, setStatus] = useState("loading"); // loading | ok | error
   const [error, setError] = useState("");
   const [usage, setUsage] = useState(null);
+  const [paused, setPaused] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
 
   async function load() {
     setStatus("loading");
     setError("");
     try {
-      const resp = await authFetch(`/api/admin?resource=quota-usage`);
-      const json = await resp.json();
-      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      const [usageResp, settingsResp] = await Promise.all([
+        authFetch(`/api/admin?resource=quota-usage`),
+        authFetch(`/api/admin?resource=settings`),
+      ]);
+      const json = await usageResp.json();
+      if (!usageResp.ok) throw new Error(json.error || `HTTP ${usageResp.status}`);
       setUsage(json);
+      const settingsJson = await settingsResp.json().catch(() => null);
+      if (settingsResp.ok && settingsJson) setPaused(settingsJson.settings?.invezgo_paused === true);
       setStatus("ok");
     } catch (e) {
       setError(e.message);
       setStatus("error");
+    }
+  }
+
+  async function togglePause() {
+    setPauseBusy(true);
+    try {
+      const resp = await authFetch(`/api/admin?resource=settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "invezgo_paused", value: !paused }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+      setPaused((prev) => !prev);
+    } catch (e) {
+      // Diamkan — kalau gagal, status paused di UI tidak berubah, admin bisa coba lagi
+    } finally {
+      setPauseBusy(false);
     }
   }
 
@@ -424,9 +449,20 @@ function QuotaGaugeSection() {
             Reset: {new Date(usage.expire).toLocaleString("id-ID")}
             {usage.isBlocked ? " · ⚠️ STATUS: DIBLOKIR SEMENTARA" : ""}
           </div>
-          <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={load}>
-            🔄 Refresh
-          </button>
+          {paused && (
+            <div className="error-box" style={{ marginTop: 10 }}>
+              ⏸️ Invezgo API sedang di-PAUSE — semua scan/flush/chart/bandarmologi ditolak (0 request keluar)
+              sampai di-Resume lagi.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="btn btn-ghost" onClick={load}>
+              🔄 Refresh
+            </button>
+            <button className={`btn ${paused ? "btn-primary" : "btn-ghost"}`} onClick={togglePause} disabled={pauseBusy}>
+              {pauseBusy ? "⏳" : paused ? "▶️ Resume Invezgo" : "⏸️ Pause Invezgo"}
+            </button>
+          </div>
         </>
       )}
     </div>
