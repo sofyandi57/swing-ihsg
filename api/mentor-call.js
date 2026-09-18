@@ -25,7 +25,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { requireUser } from "./_lib/auth.js";
-import { rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
+import { isInvezgoPaused, rejectIfInvezgoPaused } from "./_lib/invezgoPause.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -57,6 +57,11 @@ const VALID_CODES_TTL_MS = 60 * 60 * 1000;
 async function getValidStockCodes() {
   const now = Date.now();
   if (_validCodesCache && now - _validCodesCachedAt < VALID_CODES_TTL_MS) return _validCodesCache;
+
+  // Kill-switch global — kalau di-pause dan cache sudah kosong/kadaluarsa,
+  // JANGAN hit Invezgo, degradasi ke Set kosong (pesan tetap tersimpan,
+  // cuma tidak ada kode yang tervalidasi/terdeteksi sampai di-Resume).
+  if (await isInvezgoPaused()) return _validCodesCache || new Set();
 
   const resp = await fetch(`${INVEZGO_BASE_URL}/analysis/list/stock`, {
     headers: { Authorization: `Bearer ${INVEZGO_API_KEY}` },
@@ -342,6 +347,7 @@ function ymd(date) {
 // masuk watchlist" di watchlist_history. Best-effort: gagal di sini TIDAK
 // menggagalkan penambahan ke watchlist, cuma bikin price null di histori.
 async function fetchLatestPrice(code) {
+  if (await isInvezgoPaused()) return null;
   try {
     const to = new Date();
     const from = new Date(to.getTime() - 10 * 24 * 60 * 60 * 1000);
@@ -487,10 +493,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Sisa path di bawah ini (add-watchlist via fetchLatestPrice, cross-check
-  // pesan via getValidStockCodes/crossCheckWithScanHistory) SEMUA memanggil
-  // Invezgo — gate satu titik di sini.
-  if (await rejectIfInvezgoPaused(req, res)) return;
+  // TIDAK di-gate total di sini (beda dari handleCheckStock) — fitur inti
+  // "kirim pesan ke Mentor untuk cross-check" tetap harus bisa dipakai
+  // ngobrol/simpan histori saat Invezgo di-pause. Yang butuh Invezgo
+  // (getValidStockCodes, fetchLatestPrice) masing-masing degradasi graceful
+  // sendiri di bawah — bukan blok total endpoint ini.
 
   // Tambah SATU kode ke watchlist atas pilihan eksplisit user (tombol "+ Tambah
   // ke Watchlist" di hasil cross-check) — menggantikan upsert otomatis semua
