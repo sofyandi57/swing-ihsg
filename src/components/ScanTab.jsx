@@ -22,18 +22,18 @@ const CRITERIA = [
 
 const SORT_FIELDS_BY_MODE = {
   global: [
-    { id: "volumeRatio", label: "Volume Ratio" },
     { id: "value", label: "Value" },
+    { id: "freq", label: "Frekuensi" },
     { id: "priceChangePct", label: "Change %" },
   ],
   sektor: [
-    { id: "volumeRatio", label: "Volume Ratio" },
     { id: "value", label: "Value" },
+    { id: "freq", label: "Frekuensi" },
     { id: "priceChangePct", label: "Change %" },
   ],
   value: [
     { id: "value", label: "Value" },
-    { id: "volumeRatio", label: "Volume Ratio" },
+    { id: "freq", label: "Frekuensi" },
   ],
   volume_spike: [
     { id: "volRatio3v20", label: "Rasio Volume 3v20" },
@@ -82,7 +82,7 @@ function buildScanNote(row, mode) {
       ? `ratio 3v20 ${row.volRatio3v20?.toFixed(2)}x`
       : mode === "special_if2x"
       ? `volume vs MA20 ${row.volumeVsMA20?.toFixed(2)}x`
-      : `volume ratio ${row.volumeRatio?.toFixed(2)}x`;
+      : `freq ${formatNumber(row.freq)}, value ${formatCompact(row.value)}`;
   return `Dari Run Scan (${mode}): ${ratioLabel}, harga ${Math.round(row.price)} (${row.priceChangePct >= 0 ? "+" : ""}${row.priceChangePct.toFixed(2)}%).`;
 }
 
@@ -129,7 +129,7 @@ function ResultCard({ row, mode, aiPick }) {
             ? `${row.volRatio3v20.toFixed(2)}x (20h)`
             : mode === "special_if2x"
             ? `${row.volumeVsMA20.toFixed(2)}x (MA20)`
-            : `${row.volumeRatio.toFixed(2)}x`}
+            : `Freq ${formatNumber(row.freq)}`}
         </span>
       </div>
       {aiPick && <div className="cross-hit" style={{ marginTop: 0, marginBottom: 8 }}>🤖 {aiPick.reason}</div>}
@@ -164,6 +164,12 @@ function ResultCard({ row, mode, aiPick }) {
           <span className="result-metric-label">Value</span>
           <span className="result-metric-value">{formatCompact(row.value)}</span>
         </div>
+        {(mode === "global" || mode === "sektor" || mode === "value") && (
+          <div className="result-metric">
+            <span className="result-metric-label">Frekuensi</span>
+            <span className="result-metric-value">{formatNumber(row.freq)}</span>
+          </div>
+        )}
         {mode === "volume_spike" && (
           <>
             <div className="result-metric">
@@ -360,7 +366,7 @@ export default function ScanTab() {
   const [insight, setInsight] = useState("");
   const [insightStatus, setInsightStatus] = useState("idle");
 
-  const [sortField, setSortField] = useState("volumeRatio");
+  const [sortField, setSortField] = useState("value");
   const [sortDir, setSortDir] = useState("desc");
 
   const [aiStatus, setAiStatus] = useState("idle"); // idle | loading | done | error
@@ -442,7 +448,6 @@ export default function ScanTab() {
     try {
       const rowsPayload = sortedResults.map((r) => ({
         code: r.code,
-        volumeRatio: r.volumeRatio,
         value: r.value,
         priceChangePct: r.priceChangePct,
         volRatio3v20: r.volRatio3v20,

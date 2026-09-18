@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { authFetch } from "../lib/supabaseClient.js";
 
 const SETTINGS_LABELS = {
-  min_volume_ratio: "Min Volume Ratio",
-  min_prev_volume: "Min Prev Volume",
+  min_value_activity: "Min Value Aktivitas (Rp)",
+  min_freq: "Min Frekuensi Transaksi",
   min_price: "Min Price",
   top_n: "Top N Hasil",
   concurrency: "Concurrency Pool",

@@ -178,8 +178,12 @@ async function handleUsers(req, res, supabase) {
 }
 
 const SETTINGS_DEFAULTS = {
-  min_volume_ratio: 3.0,
-  min_prev_volume: 1_000_000,
+  // min_volume_ratio/min_prev_volume DIHAPUS — Stage 1 scan pindah ke batch
+  // endpoint yang tidak punya volume kemarin (lihat komentar
+  // MIN_VALUE_ACTIVITY di api/screener.js). Diganti min_value_activity +
+  // min_freq ("aktivitas tidak biasa hari ini").
+  min_value_activity: 500_000_000,
+  min_freq: 50,
   min_price: 50,
   top_n: 25,
   concurrency: 20,

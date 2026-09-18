@@ -39,8 +39,20 @@ const CRON_SECRET = process.env.CRON_SECRET;
 
 // Nilai default — bisa di-override lewat Admin panel (tabel app_settings),
 // tanpa perlu edit kode/redeploy. Lihat loadSettingsOverrides().
-let MIN_VOLUME_RATIO = 3.0;
-let MIN_PREV_VOLUME = 1_000_000;
+//
+// MIN_VALUE_ACTIVITY/MIN_FREQ MENGGANTIKAN MIN_VOLUME_RATIO/MIN_PREV_VOLUME
+// (rasio volume hari ini vs KEMARIN) — perubahan arsitektur, bukan cuma
+// rename. Alasan: Stage 1 sekarang pakai /batch/intraday-data (10 kode/
+// request, ~50-120 request untuk seluruh universe ~1200 saham) menggantikan
+// /analysis/chart/stock/{code} SATU-PER-SATU (dulu ~1200 request PER SCAN —
+// User laporkan ini yang bikin kuota bulanan cepat habis cuma dari beberapa
+// kali klik Run Scan). Trade-off JUJUR: batch endpoint TIDAK punya field
+// volume KEMARIN, jadi rasio volume vs kemarin TIDAK BISA dihitung lagi.
+// Kriteria diganti value (nilai transaksi hari ini) + freq (jumlah transaksi
+// hari ini) — sinyal "aktivitas tidak biasa" yang datanya memang tersedia di
+// batch endpoint, sudah dipakai lebih dulu di special_if2x/ARA Hunter.
+let MIN_VALUE_ACTIVITY = 500_000_000;
+let MIN_FREQ = 50;
 let MIN_PRICE = 50;
 let TOP_N = 25;
 let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
@@ -153,13 +165,13 @@ function rowFromDb(r) {
     code: r.code,
     volume: r.volume,
     prevVolume: r.prev_volume,
-    volumeRatio: Number(r.volume_ratio),
     price: r.price,
     prevPrice: r.prev_price,
     priceChangePct: Number(r.price_change_pct),
     sector: r.sector,
     subsector: r.subsector,
     value: Number(r.value),
+    freq: r.freq != null ? Number(r.freq) : null,
     avgVolume3d: r.avg_volume_3d != null ? Number(r.avg_volume_3d) : null,
     avgVolume20d: r.avg_volume_20d != null ? Number(r.avg_volume_20d) : null,
     volRatio3v20: r.vol_ratio_3v20 != null ? Number(r.vol_ratio_3v20) : null,
@@ -180,8 +192,8 @@ async function loadSettingsOverrides() {
     if (error || !data) return;
 
     for (const row of data) {
-      if (row.key === "min_volume_ratio") MIN_VOLUME_RATIO = Number(row.value);
-      if (row.key === "min_prev_volume") MIN_PREV_VOLUME = Number(row.value);
+      if (row.key === "min_value_activity") MIN_VALUE_ACTIVITY = Number(row.value);
+      if (row.key === "min_freq") MIN_FREQ = Number(row.value);
       if (row.key === "min_price") MIN_PRICE = Number(row.value);
       if (row.key === "top_n") TOP_N = Number(row.value);
       if (row.key === "concurrency") CONCURRENCY = Number(row.value);
@@ -263,21 +275,6 @@ async function getSubsector(code) {
   }
 }
 
-// Frekuensi transaksi (jumlah kali transaksi terjadi hari ini) HANYA tersedia
-// di endpoint intraday-data, TIDAK ada di /analysis/chart/stock/ yang dipakai
-// getDailyMetrics — jadi mode "special_if2x" (butuh syarat Frequency > 1) perlu
-// panggilan Invezgo TAMBAHAN. Untuk menjaga biaya API tetap rendah (pelajaran
-// dari sesi sebelumnya), ini HANYA dipanggil untuk saham yang SUDAH lolos
-// semua filter murah lainnya (harga, volume, value) — bukan untuk semua ~900
-// saham di universe.
-async function getFrequency(code) {
-  try {
-    const d = await invezgoGet(`/analysis/intraday-data/${code}`);
-    return Number(d?.freq) || 0;
-  } catch (e) {
-    return null;
-  }
-}
 
 // Snapshot live SATU kode untuk mode "momentum_sniper" — freq, value/volume
 // hari ini, dan bid/offer LEVEL 1 SAJA (best bid/offer lot). PENTING: spesifikasi
@@ -490,10 +487,11 @@ async function runAraHunterScan() {
   return { all, matched, totalScanned: all.length };
 }
 
-// Fetch mentah + retry 429 — dipisah dari perhitungan supaya bisa dipakai
-// ULANG untuk fetch "murah" (10 hari) MAUPUN fetch "mahal" (40 hari) tanpa
-// duplikasi logic retry. Lihat getDailyMetrics/getExtendedMetrics di bawah
-// untuk kenapa dipisah dua tahap begini (multistage filter, hemat kuota).
+// Fetch mentah + retry 429 — dipakai getExtendedMetrics (Stage 2, 40 hari,
+// HANYA untuk shortlist volume_spike/special_if2x yang sudah lolos Stage 1).
+// Stage 1 sendiri TIDAK lagi pakai ini sejak pindah ke batch endpoint (lihat
+// getIntradayPriceSnapshotsBatch) — dulu satu fungsi ini dipakai bergantian
+// untuk Stage 1 (10 hari) dan Stage 2 (40 hari), sekarang cuma Stage 2.
 async function fetchChartRows(code, lookbackDays) {
   const to = new Date();
   const from = new Date(to.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
@@ -525,44 +523,6 @@ async function fetchChartRows(code, lookbackDays) {
   return [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
 }
 
-// lookbackDays: 10 hari cukup untuk metrik 2-hari (dipakai SEMUA mode di
-// STAGE 1 — global/sektor/value/momentum_sniper langsung, volume_spike/
-// special_if2x pakai ini dulu SEBELUM fetch tambahan 40-hari). Payload 10
-// hari jauh lebih kecil/cepat daripada 40 hari — inilah yang bikin scan
-// murah untuk ~900 saham sekaligus.
-async function getDailyMetrics(code, lookbackDays = 10) {
-  const rows = await fetchChartRows(code, lookbackDays);
-  if (!rows) return null;
-
-  const today = rows[rows.length - 1];
-  const prev = rows[rows.length - 2];
-
-  const volume = Number(today.volume); // volume dari Invezgo adalah string, wajib di-cast
-  const prevVolume = Number(prev.volume);
-  const price = Number(today.close);
-  const prevPrice = Number(prev.close);
-  const open = Number(today.open); // dipakai mode "momentum_sniper" (syarat candle hijau: close > open)
-  const low = Number(today.low);
-  const high = Number(today.high);
-
-  if (!prevVolume || !Number.isFinite(volume) || !Number.isFinite(prevVolume)) return null;
-
-  return {
-    code,
-    volume,
-    prevVolume,
-    price,
-    prevPrice,
-    open,
-    low,
-    high,
-    avgVolume3d: null,
-    avgVolume20d: null,
-    volRatio3v20: null,
-    priceChange3d: null,
-  };
-}
-
 // STAGE 2 khusus mode volume_spike/special_if2x — fetch ULANG dengan 40 hari,
 // TAPI HANYA untuk kode yang sudah lolos filter likuiditas murah dari Stage 1
 // (biasanya seperlima s/d sepersepuluh dari total universe, bukan ~900).
@@ -589,11 +549,10 @@ async function getExtendedMetrics(code) {
 }
 
 // Empat mode kriteria — dipilih User SEBELUM scan (bukan filter sesudahnya):
-//   global       — volume ratio >= MIN_VOLUME_RATIO (default 3x, Admin panel),
-//                  prevVolume >= MIN_PREV_VOLUME, price >= MIN_PRICE — floor
-//                  yang sama dipakai sejak awal project, supaya rasio yang
-//                  tampil memang "berkali lipat" (bukan cuma naik sedikit dari
-//                  base volume yang kecil banget)
+//   global       — value >= MIN_VALUE_ACTIVITY, freq >= MIN_FREQ, price >=
+//                  MIN_PRICE (default Admin panel) — "aktivitas tidak biasa"
+//                  hari ini, MENGGANTIKAN volume ratio vs kemarin (lihat
+//                  komentar MIN_VALUE_ACTIVITY di atas untuk kenapa)
 //   sektor       — sama seperti global, TAPI codes DIPERSEMPIT ke sektor (dan
 //                  opsional subsektor) yang dipilih SEBELUM fetch chart, jadi
 //                  scan-nya lebih cepat (bukan cuma filter tampilan)
@@ -619,20 +578,53 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
   }
 
-  // STAGE 1 — SEMUA mode, SELALU 10 hari (murah), untuk SELURUH universe.
-  // Sebelumnya volume_spike/special_if2x langsung minta 40 hari untuk ~900
-  // saham sekaligus (payload 4x lebih besar per saham, terlepas hampir semua
-  // di antaranya bakal gagal filter likuiditas dasar). Sekarang data 40-hari
-  // (Stage 2, lihat di bawah) HANYA diminta untuk saham yang sudah lolos
-  // saringan likuiditas murah dari Stage 1 — multistage filter, sama
-  // prinsipnya dengan mode "momentum_sniper" dan "special_if2x"-nya freq.
-  const pooledResults = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code, 10));
-  const rawResults = pooledResults.filter(Boolean);
+  // STAGE 1 — SEMUA mode, batch /batch/intraday-data (10 kode/request) untuk
+  // SELURUH universe — MENGGANTIKAN /analysis/chart/stock/{code} satu-per-
+  // satu (dulu ~1 request PER SAHAM PER SCAN, ~1200 request sekali klik Run
+  // Scan — akar penyebab kuota bulanan cepat habis, dilaporkan User lewat
+  // log Invezgo). Sekarang ~120 request (1200 kode / 10 per chunk) untuk
+  // SELURUH Stage 1, apa pun mode-nya.
+  //
+  // TRADE-OFF JUJUR: batch endpoint tidak punya volume KEMARIN, jadi
+  // volumeRatio (volume hari ini vs kemarin) TIDAK BISA dihitung lagi —
+  // lihat komentar MIN_VALUE_ACTIVITY/MIN_FREQ di atas untuk kriteria
+  // pengganti. r.prevVolume sengaja null di semua mode sekarang (kolom
+  // scan_results terkait juga akan null, bukan dihapus dari skema).
+  const snapMap = await getIntradayPriceSnapshotsBatch(codes);
+  const rawResults = codes
+    .map((code) => {
+      const d = snapMap.get(code);
+      if (!d) return null;
+      const close = Number(d.close);
+      const prev = Number(d.prev);
+      const open = Number(d.open);
+      const volume = Number(d.volume);
+      const freq = Number(d.freq);
+      const value = Number(d.value);
+      if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(close)) return null;
+      return {
+        code,
+        price: close,
+        prevPrice: prev,
+        open: Number.isFinite(open) ? open : null,
+        low: Number.isFinite(Number(d.low)) ? Number(d.low) : null,
+        high: Number.isFinite(Number(d.high)) ? Number(d.high) : null,
+        volume: Number.isFinite(volume) ? volume : 0,
+        prevVolume: null,
+        freq: Number.isFinite(freq) ? freq : 0,
+        value: Number.isFinite(value) ? value : 0,
+        avgVolume3d: null,
+        avgVolume20d: null,
+        volRatio3v20: null,
+        priceChange3d: null,
+      };
+    })
+    .filter(Boolean);
 
-  // sector diambil dari daftar saham (gratis, sudah di memori) — value = estimasi
-  // nilai transaksi hari ini (price x volume).
+  // sector diambil dari daftar saham (gratis, sudah di memori). value SUDAH
+  // langsung dari field Invezgo (lebih akurat daripada estimasi price*volume
+  // manual yang dipakai versi sebelumnya).
   const allWithRatio = rawResults.map((r) => {
-    const volumeRatio = r.volume / r.prevVolume;
     const priceChangePct = ((r.price - r.prevPrice) / r.prevPrice) * 100;
     // Metadata informatif (ditampilkan sebagai badge di card) — TIDAK dipakai
     // untuk menyaring hasil di mode manapun kecuali "volume_spike" (yang pakai
@@ -651,20 +643,13 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     // "volume breakout" yang dipakai preset IF2X: satu hari lonjakan volume
     // relatif terhadap baseline sebulan terakhir, bukan tren 3 hari.
     const volumeVsMA20 = r.avgVolume20d ? r.volume / r.avgVolume20d : null;
-    // volumeChangePct — dipakai preset IF2X sebagai floor "> -100%" (volume
-    // tidak anjlok sampai nol). Selalu true kecuali volume hari ini benar-benar
-    // 0, jadi dampaknya kecil, tapi tetap diterapkan persis sesuai preset asli.
-    const volumeChangePct = ((r.volume - r.prevVolume) / r.prevVolume) * 100;
     return {
       ...r,
-      volumeRatio,
       priceChangePct,
       volumeVsMA20,
-      volumeChangePct,
       quietAccumulation,
       sudahNaikTajam,
       sector: sectorByCode.get(r.code) || null,
-      value: r.price * r.volume,
     };
   });
 
@@ -719,14 +704,17 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     // butuh panggilan Invezgo terpisah (lihat getFrequency) — diterapkan
     // SESUDAH ini, hanya untuk saham yang sudah lolos semua filter murah di
     // bawah, supaya tidak menambah ratusan hit API percuma ke universe penuh.
+    // Rule "volumeChangePct > -100%" versi asli butuh volume KEMARIN (tidak
+    // lagi tersedia sejak Stage 1 pindah ke batch endpoint — lihat komentar
+    // MIN_VALUE_ACTIVITY di atas) — DIHAPUS, bukan disamarkan. Dampaknya kecil:
+    // floor "volume >= 5jt" di bawah sudah cukup menyaring saham nyaris tidak
+    // bertransaksi, tujuan asli rule ini.
     matched = allWithRatio
       .filter((r) =>
         r.priceChangePct >= -10 &&
-        r.volumeChangePct > -100 &&
         r.volumeVsMA20 !== null && r.volumeVsMA20 >= 2 &&
         r.volume >= 5_000_000 &&
-        r.value > 3_000_000_000 &&
-        r.prevVolume > 0
+        r.value > 3_000_000_000
       )
       .sort((a, b) => b.volumeVsMA20 - a.volumeVsMA20);
   } else if (mode === "momentum_sniper") {
@@ -747,30 +735,29 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
       .sort((a, b) => b.value - a.value)
       .slice(0, 50);
   } else if (mode === "sektor") {
+    // Kriteria "aktivitas tidak biasa" (value + freq hari ini) menggantikan
+    // volume ratio vs kemarin — lihat komentar MIN_VALUE_ACTIVITY di atas.
     matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio)
-      .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
-      .sort((a, b) => b.volumeRatio - a.volumeRatio);
+      .filter((r) => r.value >= MIN_VALUE_ACTIVITY && r.freq >= MIN_FREQ && r.price >= MIN_PRICE)
+      .sort((a, b) => b.value - a.value);
   } else {
-    // global — TETAP butuh volume ratio minimum (default 3x, bisa diubah di
-    // Admin panel) dan volume dasar (prevVolume) minimum, supaya tidak ada
-    // "rasio menipu" dari saham yang base volume-nya kecil banget (misal dari
-    // 100 lembar ke 5.000 lembar = rasio 50x tapi tidak berarti apa-apa).
-    // Ini persis langkah 3 di metode Sherly: "pilih yang volume jauh/berkali
-    // lipat dari prev volume" — bukan cuma "lebih tinggi sedikit".
+    // global — kriteria "aktivitas tidak biasa": value transaksi hari ini +
+    // jumlah transaksi (freq) minimum, MENGGANTIKAN volume ratio vs kemarin
+    // (tidak lagi bisa dihitung sejak Stage 1 pindah ke batch endpoint —
+    // lihat komentar MIN_VALUE_ACTIVITY di atas untuk trade-off lengkapnya).
+    // Freq minimum tetap menjaga semangat "bukan cuma satu-dua lot nyasar,
+    // banyak partisipan ikut" dari kriteria volume ratio yang digantikan.
     matched = allWithRatio
-      .filter((r) => r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
-      .sort((a, b) => b.volumeRatio - a.volumeRatio);
+      .filter((r) => r.value >= MIN_VALUE_ACTIVITY && r.freq >= MIN_FREQ && r.price >= MIN_PRICE)
+      .sort((a, b) => b.value - a.value);
   }
 
-  // Lengkapi rule "Frequency > 1" preset IF2X — HANYA untuk shortlist yang
-  // sudah lolos filter murah di atas (biasanya puluhan saham, bukan ~900),
-  // sama prinsipnya dengan getSubsector() di mode "sektor".
-  if (mode === "special_if2x" && matched.length > 0) {
-    const freqBatch = await Promise.all(matched.map((r) => getFrequency(r.code)));
-    matched.forEach((r, i) => {
-      r.freq = freqBatch[i];
-    });
-    matched = matched.filter((r) => r.freq !== null && r.freq > 1);
+  // Rule "Frequency > 1" preset IF2X — DULU butuh panggilan Invezgo terpisah
+  // per kode (getFrequency), SEKARANG gratis karena r.freq sudah ikut di
+  // Stage 1 (batch endpoint sudah menyertakan freq untuk semua kode
+  // sekaligus, tidak perlu fetch tambahan lagi).
+  if (mode === "special_if2x") {
+    matched = matched.filter((r) => r.freq > 1);
   }
 
   // Batas keras (hardcode, berlaku di SEMUA mode termasuk "value" — sebagai
@@ -979,8 +966,13 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
       duration_ms: durationMs,
       total_scanned: totalScanned,
       total_passed_filter: matched.length,
-      min_volume_ratio: MIN_VOLUME_RATIO,
-      min_prev_volume: MIN_PREV_VOLUME,
+      // Kolom lama, TIDAK dipakai lagi sejak Stage 1 pindah ke batch endpoint
+      // (lihat komentar MIN_VALUE_ACTIVITY) — diisi 0, bukan dihapus, karena
+      // NOT NULL di skema dan tidak mau ganggu insert historis lama.
+      min_volume_ratio: 0,
+      min_prev_volume: 0,
+      min_value_activity: MIN_VALUE_ACTIVITY,
+      min_freq: MIN_FREQ,
       min_price: MIN_PRICE,
       mode: criteria.mode,
       sector: criteria.sector || null,
@@ -1010,6 +1002,7 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
     sector: r.sector,
     subsector: r.subsector || null, // hanya terisi untuk mode "sektor"
     value: r.value,
+    freq: r.freq ?? null,
     avg_volume_3d: r.avgVolume3d,
     avg_volume_20d: r.avgVolume20d,
     vol_ratio_3v20: r.volRatio3v20,

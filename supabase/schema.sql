@@ -31,6 +31,18 @@ alter table scan_runs add column if not exists subsector text;
 alter table scan_runs add column if not exists min_value numeric;
 alter table scan_runs add column if not exists min_ratio numeric;
 
+-- Stage 1 scan pindah dari /analysis/chart/stock/{code} satu-per-satu (dulu
+-- ~1200 request PER SCAN, penyebab kuota bulanan cepat habis — lihat commit
+-- "Rewrite Stage 1 scan to use batch endpoint") ke /batch/intraday-data.
+-- Trade-off: volume KEMARIN tidak lagi tersedia, jadi kriteria "volume ratio
+-- vs kemarin" (min_volume_ratio/min_prev_volume) diganti "aktivitas tidak
+-- biasa hari ini" (value + freq). Kolom LAMA (min_volume_ratio numeric,
+-- min_prev_volume bigint) TETAP ADA (NOT NULL, tidak di-drop supaya insert
+-- lama historisnya tetap valid) tapi TIDAK DIPAKAI LAGI mulai sekarang — diisi
+-- 0 di baris baru. Kolom BARU di bawah ini yang jadi sumber kebenaran.
+alter table scan_runs add column if not exists min_value_activity numeric;
+alter table scan_runs add column if not exists min_freq numeric;
+
 -- Index untuk lookup cache cepat: "cari run dengan kriteria persis sama,
 -- dalam beberapa menit terakhir"
 create index if not exists idx_scan_runs_cache_lookup on scan_runs(mode, scanned_at desc);
@@ -57,6 +69,16 @@ create table if not exists scan_results (
 alter table scan_results add column if not exists sector text;
 alter table scan_results add column if not exists subsector text;
 alter table scan_results add column if not exists value numeric;
+
+-- Stage 1 scan pindah ke batch endpoint (lihat komentar MIN_VALUE_ACTIVITY di
+-- api/screener.js) — prev_volume/volume_ratio TIDAK LAGI dihitung untuk mode
+-- manapun (dulu NOT NULL, sekarang selalu null baris baru). WAJIB drop NOT
+-- NULL di sini — tanpa ini SEMUA insert scan_results akan gagal (constraint
+-- violation) sejak perubahan ini di-deploy. freq DITAMBAHKAN sebagai kolom
+-- baru — kriteria filter inti sekarang, bukan cuma badge tampilan.
+alter table scan_results alter column prev_volume drop not null;
+alter table scan_results alter column volume_ratio drop not null;
+alter table scan_results add column if not exists freq numeric;
 
 -- Kolom kriteria "akumulasi diam-diam" (volume 3 hari terakhir rata-rata lebih
 -- tinggi dari volume 20 hari sebelumnya, TAPI harga cuma naik 0-10%) — beda

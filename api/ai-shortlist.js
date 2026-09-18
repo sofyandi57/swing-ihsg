@@ -18,7 +18,7 @@
 // manual satu-satu. Tetap cepat karena cuma dihitung untuk saham yang
 // benar-benar terpilih, bukan seluruh hasil scan.
 //
-// POST body: { rows: [{ code, volumeRatio, value, priceChangePct,
+// POST body: { rows: [{ code, value, priceChangePct,
 //   volRatio3v20?, priceChange3d?, sector?, subsector? }, ...] }
 // (rows = hasil scan yang SEDANG ditampilkan di browser, tidak difetch ulang)
 
@@ -163,16 +163,16 @@ async function askGroq(enrichedRows) {
             role: "system",
             content:
               `Anda analis screening saham Indonesia (IDX/BEI). Diberi daftar saham hasil ` +
-              `screening dengan metrik: volumeRatio (lonjakan volume vs kemarin), value (nilai ` +
-              `transaksi hari ini, proxy likuiditas), priceChangePct, freq (frekuensi transaksi ` +
-              `hari ini — makin tinggi makin banyak trader terlibat, bukan cuma 1-2 order besar), ` +
-              `spreadPct (selisih bid-offer terhadap harga, makin besar makin ILIKUID/BERISIKO ` +
-              `untuk keluar-masuk posisi), imbalance (positif = minat beli lebih besar dari jual). ` +
-              `Pilih maksimal ${n} saham PALING MENARIK berdasarkan kombinasi: volume spike tinggi, ` +
-              `frekuensi tinggi (partisipasi luas, bukan cuma 1-2 order), value cukup besar ` +
-              `(likuid), DAN risiko wajar (spread tidak terlalu lebar). Beri alasan 1 kalimat per ` +
-              `pilihan DAN catatan risiko 1 kalimat (kalau ada, misal spread lebar/freq rendah). ` +
-              `JANGAN merekomendasikan beli/jual eksplisit — ini alat bantu prioritas baca data.`,
+              `screening dengan metrik: value (nilai transaksi hari ini, proxy likuiditas), ` +
+              `priceChangePct, freq (frekuensi transaksi hari ini — makin tinggi makin banyak ` +
+              `trader terlibat, bukan cuma 1-2 order besar), spreadPct (selisih bid-offer ` +
+              `terhadap harga, makin besar makin ILIKUID/BERISIKO untuk keluar-masuk posisi), ` +
+              `imbalance (positif = minat beli lebih besar dari jual). Pilih maksimal ${n} saham ` +
+              `PALING MENARIK berdasarkan kombinasi: frekuensi tinggi (partisipasi luas, bukan ` +
+              `cuma 1-2 order), value cukup besar (likuid), pergerakan harga signifikan, DAN ` +
+              `risiko wajar (spread tidak terlalu lebar). Beri alasan 1 kalimat per pilihan DAN ` +
+              `catatan risiko 1 kalimat (kalau ada, misal spread lebar/freq rendah). JANGAN ` +
+              `merekomendasikan beli/jual eksplisit — ini alat bantu prioritas baca data.`,
           },
           { role: "user", content: JSON.stringify(enrichedRows) },
         ],
@@ -260,7 +260,6 @@ export default async function handler(req, res) {
     const snap = snapshotByCode.get(r.code) || {};
     return {
       code: r.code,
-      volumeRatio: r.volumeRatio ?? null,
       value: r.value ?? null,
       priceChangePct: r.priceChangePct ?? null,
       volRatio3v20: r.volRatio3v20 ?? null,

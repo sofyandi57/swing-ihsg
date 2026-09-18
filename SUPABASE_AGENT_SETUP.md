@@ -179,6 +179,15 @@ berubah** (jangan sisipkan di tengah — urutan kronologis harus tetap benar).
 8. **Fitur "Flush Kuota API" (Admin) + otomasi Vercel Cron** — tabel baru
    `quota_flush_data` (upsert per kode), supaya hasil harvest data (manual
    klik ATAU cron 1x/hari) tersimpan dan bisa di-export CSV kapan saja.
+9. **Rewrite Stage 1 Run Scan ke batch endpoint** (menggantikan
+   ~1200 request/scan yang menghabiskan kuota bulanan dalam beberapa klik —
+   dilaporkan User lewat log Invezgo) — `prev_volume`/`volume_ratio` di
+   `scan_results` DIUBAH dari NOT NULL jadi nullable (SELALU null di baris
+   baru mulai sekarang, kolom historis lama tetap ada, TIDAK dihapus), kolom
+   baru `freq` ditambahkan (kriteria filter inti sekarang, bukan cuma
+   badge). Kolom baru `min_value_activity`/`min_freq` di `scan_runs`
+   (`min_volume_ratio`/`min_prev_volume` lama TETAP ADA — NOT NULL, tidak
+   di-drop — tapi diisi 0 mulai sekarang, sudah tidak dipakai).
 
 ---
 
