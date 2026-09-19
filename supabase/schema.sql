@@ -43,9 +43,21 @@ alter table scan_runs add column if not exists min_ratio numeric;
 alter table scan_runs add column if not exists min_value_activity numeric;
 alter table scan_runs add column if not exists min_freq numeric;
 
+-- Batch endpoint ternyata ditolak 402 "Minimum max role required" oleh akun
+-- Invezgo kita (role di bawah minimum yang disyaratkan endpoint Batch) —
+-- Stage 1 KEMBALI ke /analysis/chart/stock/{code} satu-per-satu ("metode
+-- Sherly" semula), jadi min_volume_ratio/min_prev_volume DIPAKAI LAGI mulai
+-- sekarang (bukan lagi diisi 0).
+--
+-- user_id — dipakai untuk batasi "maks 3x scan Global per user per 24 jam"
+-- (kuota Invezgo terbatas, scan Global paling boros ~600+ request per klik).
+-- Nullable: cron (ARA Hunter/Momentum Sniper) tidak punya user, tetap null.
+alter table scan_runs add column if not exists user_id uuid;
+
 -- Index untuk lookup cache cepat: "cari run dengan kriteria persis sama,
 -- dalam beberapa menit terakhir"
 create index if not exists idx_scan_runs_cache_lookup on scan_runs(mode, scanned_at desc);
+create index if not exists idx_scan_runs_user_mode on scan_runs(user_id, mode, scanned_at desc);
 
 create table if not exists scan_results (
   id bigint generated always as identity primary key,

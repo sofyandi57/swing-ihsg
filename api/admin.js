@@ -183,15 +183,23 @@ async function handleUsers(req, res, supabase) {
 }
 
 const SETTINGS_DEFAULTS = {
-  // min_volume_ratio/min_prev_volume DIHAPUS — Stage 1 scan pindah ke batch
-  // endpoint yang tidak punya volume kemarin (lihat komentar
-  // MIN_VALUE_ACTIVITY di api/screener.js). Diganti min_value_activity +
-  // min_freq ("aktivitas tidak biasa hari ini").
+  // min_volume_ratio/min_prev_volume DIPULIHKAN — endpoint Batch (yang tadinya
+  // menggantikan kriteria ini dengan min_value_activity/min_freq) ternyata
+  // DITOLAK 402 "Minimum max role required" oleh akun Invezgo kita. Stage 1
+  // global/sektor kembali ke /analysis/chart/stock/{code} per-kode ("metode
+  // Sherly"), jadi volume ratio hari ini vs kemarin dipakai lagi.
+  min_volume_ratio: 3.0,
+  min_prev_volume: 1_000_000,
+  // min_value_activity/min_freq TETAP ADA — dipakai mode "value" (value
+  // diestimasi price×volume sekarang) dan referensi lama.
   min_value_activity: 500_000_000,
   min_freq: 50,
   min_price: 50,
   top_n: 25,
   concurrency: 20,
+  // Maks scan Global per user per 24 jam — lihat GLOBAL_SCAN_DAILY_LIMIT di
+  // api/screener.js.
+  global_scan_daily_limit: 3,
   // On/off toggle untuk cron terjadwal (dibaca api/screener.js saat dipicu
   // CRON_SECRET — lihat blok isCronAraHunter/isCronBsjp di handler). Cron
   // Vercel sendiri TETAP terjadwal jalan (vercel.json tidak bisa diubah saat

@@ -40,22 +40,45 @@ const CRON_SECRET = process.env.CRON_SECRET;
 // Nilai default — bisa di-override lewat Admin panel (tabel app_settings),
 // tanpa perlu edit kode/redeploy. Lihat loadSettingsOverrides().
 //
-// MIN_VALUE_ACTIVITY/MIN_FREQ MENGGANTIKAN MIN_VOLUME_RATIO/MIN_PREV_VOLUME
-// (rasio volume hari ini vs KEMARIN) — perubahan arsitektur, bukan cuma
-// rename. Alasan: Stage 1 sekarang pakai /batch/intraday-data (10 kode/
-// request, ~50-120 request untuk seluruh universe ~1200 saham) menggantikan
-// /analysis/chart/stock/{code} SATU-PER-SATU (dulu ~1200 request PER SCAN —
-// User laporkan ini yang bikin kuota bulanan cepat habis cuma dari beberapa
-// kali klik Run Scan). Trade-off JUJUR: batch endpoint TIDAK punya field
-// volume KEMARIN, jadi rasio volume vs kemarin TIDAK BISA dihitung lagi.
-// Kriteria diganti value (nilai transaksi hari ini) + freq (jumlah transaksi
-// hari ini) — sinyal "aktivitas tidak biasa" yang datanya memang tersedia di
-// batch endpoint, sudah dipakai lebih dulu di special_if2x/ARA Hunter.
+// RIWAYAT: MIN_VALUE_ACTIVITY/MIN_FREQ sempat MENGGANTIKAN MIN_VOLUME_RATIO/
+// MIN_PREV_VOLUME supaya Stage 1 bisa pakai /batch/intraday-data (hemat
+// request). TERNYATA endpoint Batch DITOLAK 402 "Minimum max role required"
+// oleh akun Invezgo kita — bukan soal kuota, tapi role akun di bawah minimum
+// yang disyaratkan endpoint ini (dikonfirmasi dari body respons asli, lihat
+// commit "Show real Invezgo error body..."). SELAMA role belum di-upgrade,
+// Stage 1 global/sektor DIKEMBALIKAN ke /analysis/chart/stock/{code} satu-
+// per-satu ("metode Sherly" semula) — jadi MIN_VOLUME_RATIO/MIN_PREV_VOLUME
+// DIPAKAI LAGI. MIN_VALUE_ACTIVITY/MIN_FREQ TETAP ADA untuk mode "value" dan
+// referensi historis (value di-estimasi price×volume sekarang, freq null).
+let MIN_VOLUME_RATIO = 3.0;
+let MIN_PREV_VOLUME = 1_000_000;
 let MIN_VALUE_ACTIVITY = 500_000_000;
 let MIN_FREQ = 50;
 let MIN_PRICE = 50;
 let TOP_N = 25;
 let CONCURRENCY = 30; // jumlah slot paralel yang SELALU terisi (lihat runPool)
+
+// Kode warrant/rights (-W/-R) — likuiditas sangat rendah, derivatif dari
+// saham induk, bukan sinyal mandiri. Dibuang dari universe SEBELUM fetch apa
+// pun (bukan cuma disaring dari tampilan) — potongan pertama dari "1200 →
+// ~600 kode per scan" yang diminta User untuk hemat kuota Invezgo.
+const WARRANT_RIGHTS_SUFFIX = /-(W|R)\d*$/;
+
+// Proxy "tidak likuid sama sekali" (User: contoh CITA, maks ~1000 SID unik
+// sehari) — Invezgo TIDAK punya endpoint data unique-SID/notasi khusus
+// papan pemantauan, jadi ini heuristik dari HISTORI SCAN KITA SENDIRI
+// (scan_results), bukan data Invezgo baru — tidak menelan kuota tambahan.
+// Kode dengan value transaksi di bawah ini pada scan TERAKHIR yang tercatat
+// (14 hari terakhir) dibuang dari universe. Kode yang belum pernah discan
+// (histori kosong) TIDAK terpengaruh — aman untuk cold-start / kode baru IPO.
+const LOW_LIQUIDITY_VALUE_THRESHOLD = 30_000_000;
+const LOW_QUALITY_HISTORY_LOOKBACK_DAYS = 14;
+
+// "Max global search 3x per hari per user" (User) — dihitung rolling 24 jam
+// (lebih sederhana & tahan zona waktu daripada "hari kalender WIB"), per
+// user_id, HANYA mode "global" (paling boros: seluruh universe, bukan
+// subset sektor). Admin bisa override lewat app_settings kalau perlu.
+let GLOBAL_SCAN_DAILY_LIMIT = 3;
 
 // On/off toggle scheduler (dikontrol dari tab Run Scan, admin only) — dibaca
 // SETIAP kali endpoint ini dipanggil lewat CRON_SECRET (mode=ara_hunter atau
@@ -207,11 +230,14 @@ async function loadSettingsOverrides() {
     if (error || !data) return;
 
     for (const row of data) {
+      if (row.key === "min_volume_ratio") MIN_VOLUME_RATIO = Number(row.value);
+      if (row.key === "min_prev_volume") MIN_PREV_VOLUME = Number(row.value);
       if (row.key === "min_value_activity") MIN_VALUE_ACTIVITY = Number(row.value);
       if (row.key === "min_freq") MIN_FREQ = Number(row.value);
       if (row.key === "min_price") MIN_PRICE = Number(row.value);
       if (row.key === "top_n") TOP_N = Number(row.value);
       if (row.key === "concurrency") CONCURRENCY = Number(row.value);
+      if (row.key === "global_scan_daily_limit") GLOBAL_SCAN_DAILY_LIMIT = Number(row.value);
       if (row.key === "ara_hunter_cron_enabled") ARA_HUNTER_CRON_ENABLED = row.value !== false;
       if (row.key === "momentum_sniper_cron_enabled") MOMENTUM_SNIPER_CRON_ENABLED = row.value !== false;
       if (row.key === "invezgo_paused") INVEZGO_PAUSED = row.value === true;
@@ -453,7 +479,7 @@ async function getOrderBookBatch(codes) {
 async function runAraHunterScan() {
   const stockList = await getStockListCached();
   const sectorByCode = new Map(stockList.map((s) => [s.code, s.sector || null]));
-  const codes = stockList.map((s) => s.code).filter((c) => !/-(W|R)\d*$/.test(c));
+  const codes = stockList.map((s) => s.code).filter((c) => !WARRANT_RIGHTS_SUFFIX.test(c));
 
   const snapMap = await getIntradayPriceSnapshotsBatch(codes);
 
@@ -530,11 +556,9 @@ async function runAraHunterScan() {
   return { all, matched, totalScanned: all.length };
 }
 
-// Fetch mentah + retry 429 — dipakai getExtendedMetrics (Stage 2, 40 hari,
-// HANYA untuk shortlist volume_spike/special_if2x yang sudah lolos Stage 1).
-// Stage 1 sendiri TIDAK lagi pakai ini sejak pindah ke batch endpoint (lihat
-// getIntradayPriceSnapshotsBatch) — dulu satu fungsi ini dipakai bergantian
-// untuk Stage 1 (10 hari) dan Stage 2 (40 hari), sekarang cuma Stage 2.
+// Fetch mentah + retry 429 — dipakai getDailyMetrics (Stage 1, 10 hari) DAN
+// getExtendedMetrics (Stage 2, 40 hari, HANYA shortlist volume_spike/
+// special_if2x yang sudah lolos Stage 1).
 async function fetchChartRows(code, lookbackDays) {
   const to = new Date();
   const from = new Date(to.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
@@ -564,6 +588,83 @@ async function fetchChartRows(code, lookbackDays) {
 
   if (!Array.isArray(chart) || chart.length < 2) return null;
   return [...chart].sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
+// STAGE 1 (dipulihkan) — "metode Sherly" satu-per-satu via chart harian,
+// GANTI batch endpoint yang ditolak 402 role. Cuma OHLCV — TIDAK ada freq/
+// value asli, jadi volumeRatio (hari ini vs KEMARIN) yang jadi kriteria
+// utama lagi, bukan value/freq hari ini.
+async function getDailyMetrics(code, lookbackDays = 10) {
+  const rows = await fetchChartRows(code, lookbackDays);
+  if (!rows) return null;
+
+  const today = rows[rows.length - 1];
+  const prev = rows[rows.length - 2];
+
+  const volume = Number(today.volume);
+  const prevVolume = Number(prev.volume);
+  const price = Number(today.close);
+  const prevPrice = Number(prev.close);
+  const open = Number(today.open);
+
+  if (!prevVolume || !Number.isFinite(volume) || !Number.isFinite(prevVolume)) return null;
+
+  return { code, volume, prevVolume, price, prevPrice, open };
+}
+
+// Heuristik "tidak likuid" dari HISTORI SCAN KITA SENDIRI (bukan panggilan
+// Invezgo baru) — lihat komentar LOW_LIQUIDITY_VALUE_THRESHOLD di atas.
+// Ambil catatan TERBARU per kode dalam LOW_QUALITY_HISTORY_LOOKBACK_DAYS
+// terakhir; kode yang harganya di bawah MIN_PRICE atau value-nya di bawah
+// ambang tersebut dibuang dari universe scan berikutnya. Kode tanpa histori
+// (belum pernah discan) tidak masuk daftar buang ini sama sekali.
+async function getKnownLowQualityCodes(supabase) {
+  if (!supabase) return new Set();
+  try {
+    const since = new Date(Date.now() - LOW_QUALITY_HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from("scan_results")
+      .select("code, price, value, scan_runs!inner(scanned_at)")
+      .gte("scan_runs.scanned_at", since)
+      .order("scanned_at", { foreignTable: "scan_runs", ascending: false })
+      .limit(20000);
+    if (error || !data) return new Set();
+
+    const latestByCode = new Map();
+    for (const r of data) {
+      if (!latestByCode.has(r.code)) latestByCode.set(r.code, r); // data sudah terurut terbaru dulu
+    }
+
+    const excluded = new Set();
+    for (const [code, r] of latestByCode) {
+      const price = Number(r.price);
+      const value = Number(r.value);
+      if (Number.isFinite(price) && price > 0 && price < MIN_PRICE) excluded.add(code);
+      else if (Number.isFinite(value) && value > 0 && value < LOW_LIQUIDITY_VALUE_THRESHOLD) excluded.add(code);
+    }
+    return excluded;
+  } catch (e) {
+    return new Set(); // gagal baca histori bukan alasan gagalkan scan — universe penuh (minus warrant/rights)
+  }
+}
+
+// "Max 3x scan Global per user per 24 jam" (User) — dihitung dari scan_runs
+// yang BENAR-BENAR fresh (bukan cache-hit, lihat pemanggilnya di handler).
+async function checkGlobalScanLimit(supabase, userId) {
+  if (!supabase || !userId) return { blocked: false, count: 0 };
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count, error } = await supabase
+      .from("scan_runs")
+      .select("id", { count: "exact", head: true })
+      .eq("mode", "global")
+      .eq("user_id", userId)
+      .gte("scanned_at", since);
+    if (error) return { blocked: false, count: 0 }; // gagal cek jangan blokir user gara-gara error kita sendiri
+    return { blocked: (count || 0) >= GLOBAL_SCAN_DAILY_LIMIT, count: count || 0 };
+  } catch (e) {
+    return { blocked: false, count: 0 };
+  }
 }
 
 // STAGE 2 khusus mode volume_spike/special_if2x — fetch ULANG dengan 40 hari,
@@ -621,43 +722,45 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     codes = stockList.filter((s) => s.sector === sector).map((s) => s.code);
   }
 
-  // STAGE 1 — SEMUA mode, batch /batch/intraday-data (10 kode/request) untuk
-  // SELURUH universe — MENGGANTIKAN /analysis/chart/stock/{code} satu-per-
-  // satu (dulu ~1 request PER SAHAM PER SCAN, ~1200 request sekali klik Run
-  // Scan — akar penyebab kuota bulanan cepat habis, dilaporkan User lewat
-  // log Invezgo). Sekarang ~120 request (1200 kode / 10 per chunk) untuk
-  // SELURUH Stage 1, apa pun mode-nya.
-  //
-  // TRADE-OFF JUJUR: batch endpoint tidak punya volume KEMARIN, jadi
-  // volumeRatio (volume hari ini vs kemarin) TIDAK BISA dihitung lagi —
-  // lihat komentar MIN_VALUE_ACTIVITY/MIN_FREQ di atas untuk kriteria
-  // pengganti. r.prevVolume sengaja null di semua mode sekarang (kolom
-  // scan_results terkait juga akan null, bukan dihapus dari skema).
-  const snapMap = await getIntradayPriceSnapshotsBatch(codes);
-  const batchFetchChunkErrorCount = snapMap.__chunkErrorCount || 0;
-  const batchFetchLastError = snapMap.__lastChunkError || null;
+  // Penyaringan universe SEBELUM fetch apa pun (User: turunkan jumlah kode
+  // yang benar-benar dipanggil ke Invezgo, ~1200 → ~600) — lihat komentar
+  // WARRANT_RIGHTS_SUFFIX/LOW_LIQUIDITY_VALUE_THRESHOLD di atas.
+  codes = codes.filter((c) => !WARRANT_RIGHTS_SUFFIX.test(c));
+  const lowQualityCodes = await getKnownLowQualityCodes(getSupabaseAdmin());
+  if (lowQualityCodes.size > 0) {
+    codes = codes.filter((c) => !lowQualityCodes.has(c));
+  }
+
+  // STAGE 1 — /analysis/chart/stock/{code} SATU-PER-SATU ("metode Sherly"
+  // semula). Batch endpoint (/batch/intraday-data) DITOLAK 402 "Minimum max
+  // role required" oleh akun Invezgo kita — role akun di bawah minimum yang
+  // disyaratkan endpoint Batch, BUKAN soal kuota (lihat komentar
+  // MIN_VOLUME_RATIO di atas). Penyaringan universe di atas (warrant/rights +
+  // histori tidak likuid) MENGGANTIKAN penghematan yang tadinya didapat dari
+  // batch — jumlah request tetap terkendali walau kembali per-kode.
+  const dailyMetrics = await runPool(codes, CONCURRENCY, (code) => getDailyMetrics(code));
   const rawResults = codes
-    .map((code) => {
-      const d = snapMap.get(code);
+    .map((code, i) => {
+      const d = dailyMetrics[i];
       if (!d) return null;
-      const close = Number(d.close);
-      const prev = Number(d.prev);
-      const open = Number(d.open);
-      const volume = Number(d.volume);
-      const freq = Number(d.freq);
-      const value = Number(d.value);
-      if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(close)) return null;
       return {
         code,
-        price: close,
-        prevPrice: prev,
-        open: Number.isFinite(open) ? open : null,
-        low: Number.isFinite(Number(d.low)) ? Number(d.low) : null,
-        high: Number.isFinite(Number(d.high)) ? Number(d.high) : null,
-        volume: Number.isFinite(volume) ? volume : 0,
-        prevVolume: null,
-        freq: Number.isFinite(freq) ? freq : 0,
-        value: Number.isFinite(value) ? value : 0,
+        price: d.price,
+        prevPrice: d.prevPrice,
+        open: Number.isFinite(d.open) ? d.open : null,
+        low: null,
+        high: null,
+        volume: d.volume,
+        prevVolume: d.prevVolume,
+        volumeRatio: d.prevVolume > 0 ? d.volume / d.prevVolume : null,
+        // freq TIDAK tersedia dari /analysis/chart/stock (cuma OHLCV) — null
+        // (bukan 0), supaya filter yang butuh freq tahu ini "tidak diketahui".
+        freq: null,
+        // value diestimasi price×volume — Invezgo tidak expose value asli
+        // lewat endpoint per-kode ini (beda dari batch endpoint yang punya
+        // field value langsung). Kurang presisi, tapi konsekuensi jujur dari
+        // kembali ke endpoint per-kode karena role akun tidak cukup.
+        value: d.price * d.volume,
         avgVolume3d: null,
         avgVolume20d: null,
         volRatio3v20: null,
@@ -666,9 +769,7 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     })
     .filter(Boolean);
 
-  // sector diambil dari daftar saham (gratis, sudah di memori). value SUDAH
-  // langsung dari field Invezgo (lebih akurat daripada estimasi price*volume
-  // manual yang dipakai versi sebelumnya).
+  // sector diambil dari daftar saham (gratis, sudah di memori).
   const allWithRatio = rawResults.map((r) => {
     const priceChangePct = ((r.price - r.prevPrice) / r.prevPrice) * 100;
     // Metadata informatif (ditampilkan sebagai badge di card) — TIDAK dipakai
@@ -780,29 +881,28 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
       .sort((a, b) => b.value - a.value)
       .slice(0, 50);
   } else if (mode === "sektor") {
-    // Kriteria "aktivitas tidak biasa" (value + freq hari ini) menggantikan
-    // volume ratio vs kemarin — lihat komentar MIN_VALUE_ACTIVITY di atas.
+    // "Metode Sherly": volume ratio hari ini vs KEMARIN — dipulihkan (lihat
+    // komentar MIN_VOLUME_RATIO di atas untuk kenapa value/freq tidak lagi
+    // dipakai di sini).
     matched = (subsector ? allWithRatio.filter((r) => r.subsector === subsector) : allWithRatio)
-      .filter((r) => r.value >= MIN_VALUE_ACTIVITY && r.freq >= MIN_FREQ && r.price >= MIN_PRICE)
-      .sort((a, b) => b.value - a.value);
+      .filter((r) => r.volumeRatio !== null && r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
+      .sort((a, b) => b.volumeRatio - a.volumeRatio);
   } else {
-    // global — kriteria "aktivitas tidak biasa": value transaksi hari ini +
-    // jumlah transaksi (freq) minimum, MENGGANTIKAN volume ratio vs kemarin
-    // (tidak lagi bisa dihitung sejak Stage 1 pindah ke batch endpoint —
-    // lihat komentar MIN_VALUE_ACTIVITY di atas untuk trade-off lengkapnya).
-    // Freq minimum tetap menjaga semangat "bukan cuma satu-dua lot nyasar,
-    // banyak partisipan ikut" dari kriteria volume ratio yang digantikan.
+    // global — "metode Sherly" semula: volume ratio hari ini vs KEMARIN >=
+    // MIN_VOLUME_RATIO, dengan lantai prevVolume (bukan cuma satu-dua lot
+    // nyasar) dan lantai harga.
     matched = allWithRatio
-      .filter((r) => r.value >= MIN_VALUE_ACTIVITY && r.freq >= MIN_FREQ && r.price >= MIN_PRICE)
-      .sort((a, b) => b.value - a.value);
+      .filter((r) => r.volumeRatio !== null && r.volumeRatio >= MIN_VOLUME_RATIO && r.prevVolume >= MIN_PREV_VOLUME && r.price >= MIN_PRICE)
+      .sort((a, b) => b.volumeRatio - a.volumeRatio);
   }
 
-  // Rule "Frequency > 1" preset IF2X — DULU butuh panggilan Invezgo terpisah
-  // per kode (getFrequency), SEKARANG gratis karena r.freq sudah ikut di
-  // Stage 1 (batch endpoint sudah menyertakan freq untuk semua kode
-  // sekaligus, tidak perlu fetch tambahan lagi).
+  // Rule "Frequency > 1" preset IF2X — freq TIDAK tersedia lagi dari Stage 1
+  // per-kode (lihat komentar di atas rawResults) — filter ini DILEWATI
+  // (bukan digagalkan) kalau freq null, supaya preset IF2X tidak selalu
+  // kosong hasil hanya karena data freq tidak ada. Trade-off jujur: sedikit
+  // lebih longgar dari preset aslinya sampai ada sumber freq lain.
   if (mode === "special_if2x") {
-    matched = matched.filter((r) => r.freq > 1);
+    matched = matched.filter((r) => r.freq == null || r.freq > 1);
   }
 
   // Batas keras (hardcode, berlaku di SEMUA mode termasuk "value" — sebagai
@@ -820,13 +920,7 @@ async function runScan({ mode, sector, subsector, minValue, minRatio }) {
     matched = matched.filter((r) => r.value >= MIN_VALUE_HARDCODE);
   }
 
-  return {
-    all: allWithRatio,
-    matched,
-    totalScanned: codes.length,
-    batchFetchChunkErrorCount,
-    batchFetchLastError,
-  };
+  return { all: allWithRatio, matched, totalScanned: codes.length };
 }
 
 // Jendela operasi utama per strategi (WIB) — cuma REKOMENDASI/informasi di
@@ -996,7 +1090,7 @@ async function runMomentumSniperDeepAnalysis(stage1Candidates, supabase) {
   return enriched;
 }
 
-async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso, criteria }) {
+async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedAtIso, criteria, userId }) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return { saved: false, reason: "Supabase belum dikonfigurasi (env var kosong)." };
   }
@@ -1017,14 +1111,12 @@ async function saveToSupabase({ all, matched, totalScanned, durationMs, scannedA
       duration_ms: durationMs,
       total_scanned: totalScanned,
       total_passed_filter: matched.length,
-      // Kolom lama, TIDAK dipakai lagi sejak Stage 1 pindah ke batch endpoint
-      // (lihat komentar MIN_VALUE_ACTIVITY) — diisi 0, bukan dihapus, karena
-      // NOT NULL di skema dan tidak mau ganggu insert historis lama.
-      min_volume_ratio: 0,
-      min_prev_volume: 0,
+      min_volume_ratio: MIN_VOLUME_RATIO,
+      min_prev_volume: MIN_PREV_VOLUME,
       min_value_activity: MIN_VALUE_ACTIVITY,
       min_freq: MIN_FREQ,
       min_price: MIN_PRICE,
+      user_id: userId || null,
       mode: criteria.mode,
       sector: criteria.sector || null,
       subsector: criteria.subsector || null,
@@ -1088,8 +1180,9 @@ export default async function handler(req, res) {
   const isCronBsjp = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}` && mode === "momentum_sniper";
   const isCronAraHunter = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}` && mode === "ara_hunter";
 
+  let user = null;
   if (!isCronBsjp && !isCronAraHunter) {
-    const user = await requireUser(req, res);
+    user = await requireUser(req, res);
     if (!user) return;
   }
 
@@ -1225,13 +1318,20 @@ export default async function handler(req, res) {
       }
     }
 
-    const {
-      all,
-      matched: stage1Matched,
-      totalScanned,
-      batchFetchChunkErrorCount = 0,
-      batchFetchLastError = null,
-    } =
+    // "Max 3x scan Global per user per 24 jam" (User) — HANYA cache-miss yang
+    // benar-benar akan hit Invezgo sampai di sini; cache-hit di atas sudah
+    // return duluan dan tidak menelan kuota, jadi tidak perlu dihitung.
+    if (mode === "global" && user) {
+      const { blocked, count } = await checkGlobalScanLimit(getSupabaseAdmin(), user.id);
+      if (blocked) {
+        res.status(429).json({
+          error: `Batas scan Global tercapai (maks ${GLOBAL_SCAN_DAILY_LIMIT}x per 24 jam per user, sudah dipakai ${count}x). Coba mode Sektor/Value yang lebih hemat kuota, atau tunggu beberapa jam.`,
+        });
+        return;
+      }
+    }
+
+    const { all, matched: stage1Matched, totalScanned } =
       mode === "ara_hunter"
         ? await runAraHunterScan()
         : await runScan({
@@ -1265,26 +1365,19 @@ export default async function handler(req, res) {
       const top5ByValue = [...all]
         .sort((a, b) => (b.value || 0) - (a.value || 0))
         .slice(0, 5)
-        .map((r) => ({ code: r.code, value: r.value, freq: r.freq, price: r.price }));
+        .map((r) => ({ code: r.code, value: r.value, volumeRatio: r.volumeRatio, price: r.price }));
       debugStats = {
         totalRowsWithData: all.length,
         passedPriceFloor: all.filter((r) => r.price >= MIN_PRICE).length,
-        passedValueFloor: all.filter((r) => r.value >= MIN_VALUE_ACTIVITY).length,
-        passedFreqFloor: all.filter((r) => r.freq >= MIN_FREQ).length,
-        currentThresholds: { minValueActivity: MIN_VALUE_ACTIVITY, minFreq: MIN_FREQ, minPrice: MIN_PRICE },
+        passedVolumeRatioFloor: all.filter((r) => r.volumeRatio !== null && r.volumeRatio >= MIN_VOLUME_RATIO).length,
+        passedPrevVolumeFloor: all.filter((r) => r.prevVolume >= MIN_PREV_VOLUME).length,
+        currentThresholds: { minVolumeRatio: MIN_VOLUME_RATIO, minPrevVolume: MIN_PREV_VOLUME, minPrice: MIN_PRICE },
         top5ByValue,
-        // batchFetchChunkErrorCount > 0 dengan totalRowsWithData 0 = akar
-        // masalah BUKAN threshold ketat, tapi batch fetch ke Invezgo gagal
-        // total (semua chunk /batch/intraday-data error) — dulu error ini
-        // ditelan diam-diam sehingga "0 cocok kriteria" terlihat sama dengan
-        // "data OK tapi memang tidak ada yang lolos".
-        batchFetchChunkErrorCount,
-        batchFetchLastError,
         hint:
-          all.length === 0 && batchFetchChunkErrorCount > 0
-            ? `Batch fetch ke Invezgo gagal total (${batchFetchChunkErrorCount} chunk error) — bukan threshold terlalu ketat. Error terakhir: ${batchFetchLastError}`
-            : all.length === 0
-              ? "Semua chunk batch fetch sukses tapi tidak menghasilkan baris (kemungkinan data Invezgo kosong/null untuk seluruh universe saat ini, misal di luar jam bursa)."
+          all.length === 0 && totalScanned > 0
+            ? "Fetch per-kode ke Invezgo (/analysis/chart/stock) tidak menghasilkan baris apa pun untuk seluruh universe yang di-scan — kemungkinan besar error di sisi Invezgo (rate limit/role/paket), bukan threshold terlalu ketat. Coba lagi beberapa saat lagi."
+            : all.length > 0 && matched.length === 0
+              ? "Data berhasil diambil, tapi tidak ada saham yang lolos volume ratio hari ini vs kemarin — threshold memang cukup ketat untuk kondisi pasar saat ini."
               : undefined,
       };
     }
@@ -1298,6 +1391,7 @@ export default async function handler(req, res) {
       durationMs,
       scannedAtIso,
       criteria,
+      userId: user?.id || null,
     });
 
     res.setHeader("Cache-Control", "no-store");

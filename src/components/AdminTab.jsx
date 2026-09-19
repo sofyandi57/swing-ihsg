@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { authFetch } from "../lib/supabaseClient.js";
 
 const SETTINGS_LABELS = {
-  min_value_activity: "Min Value Aktivitas (Rp)",
+  min_volume_ratio: "Min Volume Ratio (vs kemarin)",
+  min_prev_volume: "Min Volume Kemarin",
+  min_value_activity: "Min Value Aktivitas (Rp) — mode Value",
   min_freq: "Min Frekuensi Transaksi",
   min_price: "Min Price",
   top_n: "Top N Hasil",
   concurrency: "Concurrency Pool",
+  global_scan_daily_limit: "Maks Scan Global / User / 24 Jam",
 };
 
 function UsersSection() {
